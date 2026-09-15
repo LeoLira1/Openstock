@@ -126,7 +126,7 @@ class _PortfolioShellState extends State<PortfolioShell> {
                 Padding(
                   padding: const EdgeInsets.only(right: 6),
                   child: Chip(
-                    avatar: const Text('US$', style: TextStyle(fontSize: 10)),
+                    avatar: const Text('US\$', style: TextStyle(fontSize: 10)),
                     label: Text(_money(controller.usdBrl, symbol: 'R\$')),
                     side: const BorderSide(color: Color(0xFF25344B)),
                     backgroundColor: _surface,
