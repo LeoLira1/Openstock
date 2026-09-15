@@ -386,12 +386,23 @@ class AssetsScreen extends StatelessWidget {
                                     fontWeight: FontWeight.w700)),
                             const SizedBox(height: 5),
                             Text(
-                              _signedPercent(controller.assetDayPercent(asset)),
+                              'Hoje ${_signedPercent(controller.assetDayPercent(asset))}',
                               style: TextStyle(
                                 color: controller.assetDayResult(asset) >= 0
                                     ? _green
                                     : _red,
                                 fontWeight: FontWeight.w700,
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Total ${_signedPercent(controller.assetTotalPercent(asset))}',
+                              style: TextStyle(
+                                color: controller.assetTotalResult(asset) >= 0
+                                    ? _green
+                                    : _red,
+                                fontSize: 11,
                               ),
                             ),
                           ],

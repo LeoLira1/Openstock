@@ -44,16 +44,16 @@ jobs:
         run: flutter build apk --release
 
       - name: Nomear APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.0.3.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.0.4.apk
 
       - name: Publicar release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.3
+          tag_name: v1.0.4
           target_commitish: main
-          name: OpenStock 1.0.3
+          name: OpenStock 1.0.4
           body: |
-            Correção das cotações de ativos da B3 fora da lista de demonstração.
+            Correção do cálculo da variação diária dos ativos.
 
             - Carteira B3 e Estados Unidos
             - Conversão USD/BRL
@@ -61,10 +61,10 @@ jobs:
             - Gráfico consolidado e composição
             - Dados privados no aparelho
 
-            - Fallback automático de símbolos B3 no formato `.SA`
-            - PRIO3 e demais ativos fora da lista gratuita da brapi passam a usar fonte alternativa
-            - Finnhub usada quando a chave possui acesso ao mercado brasileiro
+            - Fechamento anterior obtido do último pregão concluído
+            - Proteção contra metadados de fechamento desatualizados
+            - Resultado de cada ativo identificado como Hoje e Total
 
-            Baixe `OpenStock-v1.0.3.apk` abaixo e instale no Android.
-          files: OpenStock-v1.0.3.apk
+            Baixe `OpenStock-v1.0.4.apk` abaixo e instale no Android.
+          files: OpenStock-v1.0.4.apk
           fail_on_unmatched_files: true

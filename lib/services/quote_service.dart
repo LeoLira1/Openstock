@@ -171,9 +171,14 @@ class QuoteService {
         ));
       }
     }
+    history.sort((a, b) => a.date.compareTo(b.date));
     return MarketQuote(
       current: current,
-      previousClose: previous ?? (history.isEmpty ? current : history.last.value),
+      previousClose: resolvePreviousClose(
+        history: history,
+        current: current,
+        providerPrevious: previous,
+      ),
       history: history,
     );
   }
@@ -220,11 +225,37 @@ class QuoteService {
         ));
       }
     }
-    final previous = _number(meta['regularMarketPreviousClose']) ??
-        _number(meta['chartPreviousClose']) ??
-        (history.length > 1 ? history[history.length - 2].value : current);
+    history.sort((a, b) => a.date.compareTo(b.date));
+    final previous = resolvePreviousClose(
+      history: history,
+      current: current,
+      providerPrevious: _number(meta['chartPreviousClose']) ??
+          _number(meta['regularMarketPreviousClose']),
+    );
     return MarketQuote(current: current, previousClose: previous, history: history);
   }
 
   double? _number(Object? value) => value is num ? value.toDouble() : null;
+}
+
+/// Obtém o fechamento do pregão anterior a partir da série diária.
+///
+/// Alguns provedores mantêm `regularMarketPreviousClose` desatualizado. A série
+/// histórica é a referência primária; o metadado só é usado quando ela não
+/// contém nenhum pregão concluído.
+double resolvePreviousClose({
+  required List<PricePoint> history,
+  required double current,
+  double? providerPrevious,
+  DateTime? now,
+}) {
+  if (history.isNotEmpty) {
+    final ordered = [...history]..sort((a, b) => a.date.compareTo(b.date));
+    final localNow = now ?? DateTime.now();
+    final startOfToday = DateTime(localNow.year, localNow.month, localNow.day);
+    final completed = ordered.where((point) => point.date.isBefore(startOfToday));
+    if (completed.isNotEmpty) return completed.last.value;
+    if (ordered.length > 1) return ordered[ordered.length - 2].value;
+  }
+  return providerPrevious ?? current;
 }

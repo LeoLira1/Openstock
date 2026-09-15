@@ -80,6 +80,10 @@ class PortfolioController extends ChangeNotifier {
 
   double assetTotalResult(InvestmentAsset asset) =>
       currentValue(asset) - costValue(asset);
+  double assetTotalPercent(InvestmentAsset asset) {
+    final cost = costValue(asset);
+    return cost == 0 ? 0 : assetTotalResult(asset) / cost * 100;
+  }
 
   Future<void> initialize() async {
     loading = true;
