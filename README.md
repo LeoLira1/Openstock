@@ -14,7 +14,7 @@ Aplicativo Flutter para acompanhar, em reais, uma carteira com ações, FIIs, ET
 
 ## Fontes de cotação
 
-- B3: [brapi.dev](https://brapi.dev/), para símbolos como `PRIO3`, `BBAS3` e `VALE3`;
+- B3: [brapi.dev](https://brapi.dev/) com fallback automático `.SA` para símbolos fora da lista de demonstração, como `PRIO3` e `BBAS3`;
 - Estados Unidos: Finnhub, seguindo a integração do projeto Open-Dev-Society/OpenStock; a chave gratuita é inserida no app e protegida pelo Android;
 - histórico internacional e USD/BRL: consulta pública de gráfico, para símbolos como `VOO`, `TSLA` e `XOM`;
 - Manual: o usuário informa o preço atual quando preferir ou se uma fonte estiver indisponível.
@@ -39,4 +39,4 @@ flutter test
 flutter build apk --release
 ```
 
-O workflow `release.yml` valida o projeto, gera um APK universal e publica a release `v1.0.2`.
+O workflow `release.yml` valida o projeto, gera um APK universal e publica a release `v1.0.3`.

@@ -24,7 +24,7 @@ class QuoteService {
 
   Future<MarketQuote> fetch(InvestmentAsset asset) {
     return switch (asset.market) {
-      AssetMarket.b3 => _fetchBrapi(asset.symbol),
+      AssetMarket.b3 => _fetchBrazilian(asset.symbol),
       AssetMarket.usa => _fetchInternational(asset.symbol),
       AssetMarket.manual => Future.value(MarketQuote(
           current: asset.currentPrice ?? asset.averagePrice,
@@ -36,6 +36,40 @@ class QuoteService {
   }
 
   Future<MarketQuote> fetchDollar() => _fetchYahoo('BRL=X');
+
+  Future<MarketQuote> _fetchBrazilian(String rawSymbol) async {
+    final symbol = rawSymbol.trim().toUpperCase().replaceAll('.SA', '');
+    try {
+      return await _fetchBrapi(symbol);
+    } catch (_) {
+      // A consulta sem token da brapi é limitada a símbolos de demonstração.
+    }
+
+    MarketQuote? history;
+    try {
+      history = await _fetchYahoo('$symbol.SA');
+    } catch (_) {
+      // A Finnhub ainda pode fornecer o preço atual quando configurada.
+    }
+
+    if (_finnhubToken != null) {
+      try {
+        final live = await _fetchFinnhub('$symbol.SA', _finnhubToken!);
+        return MarketQuote(
+          current: live.current,
+          previousClose: live.previousClose,
+          history: history?.history ?? const [],
+        );
+      } catch (_) {
+        // Mantém a cotação histórica pública quando a chave não tem acesso à B3.
+      }
+    }
+
+    if (history != null) return history;
+    throw QuoteException(
+      'Cotação de $symbol indisponível na brapi, Finnhub e fonte alternativa',
+    );
+  }
 
   Future<bool> validateFinnhubToken(String token) async {
     final quote = await _fetchFinnhub('AAPL', token.trim());
