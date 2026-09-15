@@ -1,0 +1,66 @@
+name: Build e publicar OpenStock
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: openstock-release
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Criar plataforma Android
+        run: flutter create --platforms=android --org com.leolira --project-name openstock .
+
+      - name: Aplicar identidade Android
+        run: |
+          python3 tool/configure_android.py
+
+      - name: Instalar dependências
+        run: flutter pub get
+
+      - name: Análise estática
+        run: flutter analyze
+
+      - name: Testes
+        run: flutter test
+
+      - name: Gerar APK
+        run: flutter build apk --release
+
+      - name: Nomear APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.0.0.apk
+
+      - name: Publicar release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          target_commitish: main
+          name: OpenStock 1.0.0
+          body: |
+            Primeira versão do OpenStock.
+
+            - Carteira B3 e Estados Unidos
+            - Conversão USD/BRL
+            - Resultado diário e acumulado
+            - Gráfico consolidado e composição
+            - Dados privados no aparelho
+
+            Baixe `OpenStock-v1.0.0.apk` abaixo e instale no Android.
+          files: OpenStock-v1.0.0.apk
+          fail_on_unmatched_files: true
+
