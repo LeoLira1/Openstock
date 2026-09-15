@@ -29,6 +29,9 @@ class PortfolioController extends ChangeNotifier {
   String? message;
   DateTime? lastRefresh;
   bool finnhubConfigured = false;
+  bool finnhubValidated = false;
+  String? finnhubConnectionMessage;
+  String? _finnhubKey;
 
   final Map<int, MarketQuote> _marketQuotes = {};
 
@@ -83,6 +86,7 @@ class PortfolioController extends ChangeNotifier {
     notifyListeners();
     try {
       final finnhubKey = await _settings.loadFinnhubKey();
+      _finnhubKey = finnhubKey;
       finnhubConfigured = finnhubKey != null && finnhubKey.isNotEmpty;
       _quotes.configureFinnhub(finnhubKey);
       assets = await _database.loadAssets();
@@ -102,22 +106,41 @@ class PortfolioController extends ChangeNotifier {
     if (clean.isEmpty) {
       await _settings.saveFinnhubKey('');
       _quotes.configureFinnhub(null);
+      _finnhubKey = null;
       finnhubConfigured = false;
+      finnhubValidated = false;
+      finnhubConnectionMessage = null;
       notifyListeners();
       return null;
     }
     try {
-      final valid = await _quotes.validateFinnhubToken(clean);
-      if (!valid) return 'A Finnhub não aceitou essa chave.';
       await _settings.saveFinnhubKey(clean);
+      _finnhubKey = clean;
       _quotes.configureFinnhub(clean);
       finnhubConfigured = true;
-      notifyListeners();
-      await refresh();
-      return null;
     } catch (_) {
-      return 'Não foi possível validar a chave Finnhub.';
+      return 'Não foi possível guardar a chave no Android.';
     }
+    await testFinnhub();
+    await refresh();
+    return null;
+  }
+
+  Future<String> testFinnhub() async {
+    final key = _finnhubKey;
+    if (key == null || key.isEmpty) return 'Nenhuma chave foi configurada.';
+    try {
+      final valid = await _quotes.validateFinnhubToken(key);
+      finnhubValidated = valid;
+      finnhubConnectionMessage = valid
+          ? 'Conexão validada com a Finnhub.'
+          : 'A Finnhub não confirmou essa chave.';
+    } catch (error) {
+      finnhubValidated = false;
+      finnhubConnectionMessage = error.toString();
+    }
+    notifyListeners();
+    return finnhubConnectionMessage!;
   }
 
   Future<void> refresh() async {

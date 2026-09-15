@@ -447,7 +447,10 @@ class SettingsScreen extends StatelessWidget {
                     child: Text('Finnhub',
                         style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
                   ),
-                  _StatusChip(active: controller.finnhubConfigured),
+                  _StatusChip(
+                    active: controller.finnhubConfigured,
+                    validated: controller.finnhubValidated,
+                  ),
                 ]),
                 const SizedBox(height: 12),
                 const Text(
@@ -455,6 +458,10 @@ class SettingsScreen extends StatelessWidget {
                   style: TextStyle(color: _muted, height: 1.45),
                 ),
                 const SizedBox(height: 15),
+                if (controller.finnhubConnectionMessage != null) ...[
+                  _Notice(text: controller.finnhubConnectionMessage!),
+                  const SizedBox(height: 12),
+                ],
                 Row(children: [
                   Expanded(
                     child: OutlinedButton.icon(
@@ -465,6 +472,17 @@ class SettingsScreen extends StatelessWidget {
                   ),
                   if (controller.finnhubConfigured) ...[
                     const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Testar conexão',
+                      onPressed: () async {
+                        final result = await controller.testFinnhub();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context)
+                              .showSnackBar(SnackBar(content: Text(result)));
+                        }
+                      },
+                      icon: const Icon(Icons.wifi_tethering_rounded),
+                    ),
                     IconButton(
                       tooltip: 'Remover chave',
                       onPressed: () => _removeFinnhub(context, controller),
@@ -525,8 +543,9 @@ class SettingsScreen extends StatelessWidget {
 }
 
 class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.active});
+  const _StatusChip({required this.active, required this.validated});
   final bool active;
+  final bool validated;
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
@@ -534,9 +553,9 @@ class _StatusChip extends StatelessWidget {
           color: (active ? _green : _muted).withValues(alpha: .12),
           borderRadius: BorderRadius.circular(20),
         ),
-        child: Text(active ? 'Ativa' : 'Opcional',
+        child: Text(validated ? 'Conectada' : (active ? 'Salva' : 'Opcional'),
             style: TextStyle(
-                color: active ? _green : _muted,
+                color: validated ? _green : _muted,
                 fontSize: 11,
                 fontWeight: FontWeight.w700)),
       );
@@ -1175,7 +1194,10 @@ Future<void> _configureFinnhub(
                     if (error == null) {
                       Navigator.pop(dialogContext);
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Finnhub conectada com sucesso.')),
+                        SnackBar(
+                          content: Text(controller.finnhubConnectionMessage ??
+                              'Chave salva. A fonte alternativa permanece ativa.'),
+                        ),
                       );
                     } else {
                       setDialogState(() => saving = false);

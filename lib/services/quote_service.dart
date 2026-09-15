@@ -68,13 +68,33 @@ class QuoteService {
       'symbol': symbol.trim().toUpperCase(),
       'token': token,
     });
-    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
-    if (response.statusCode != 200) {
-      throw QuoteException('Finnhub: resposta ${response.statusCode}');
+    late final http.Response response;
+    try {
+      response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    } catch (error) {
+      throw QuoteException(
+        'Falha de rede ao acessar finnhub.io (${error.runtimeType})',
+      );
     }
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final current = _number(data['c']);
-    final previous = _number(data['pc']);
+    Map<String, dynamic>? data;
+    try {
+      data = jsonDecode(response.body) as Map<String, dynamic>;
+    } catch (_) {
+      data = null;
+    }
+    if (response.statusCode != 200) {
+      final apiError = data?['error']?.toString().trim();
+      throw QuoteException(
+        'Finnhub respondeu ${response.statusCode}'
+        '${apiError == null || apiError.isEmpty ? '' : ': $apiError'}',
+      );
+    }
+    final apiError = data?['error']?.toString().trim();
+    if (apiError != null && apiError.isNotEmpty) {
+      throw QuoteException('Finnhub: $apiError');
+    }
+    final current = _number(data?['c']);
+    final previous = _number(data?['pc']);
     if (current == null || current <= 0) {
       throw const QuoteException('Chave Finnhub inválida ou cotação indisponível');
     }

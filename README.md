@@ -39,4 +39,4 @@ flutter test
 flutter build apk --release
 ```
 
-O workflow `release.yml` valida o projeto, gera um APK universal e publica a release `v1.0.1`.
+O workflow `release.yml` valida o projeto, gera um APK universal e publica a release `v1.0.2`.
