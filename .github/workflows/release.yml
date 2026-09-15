@@ -43,16 +43,16 @@ jobs:
         run: flutter build apk --release
 
       - name: Nomear APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.0.0.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.0.1.apk
 
       - name: Publicar release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
+          tag_name: v1.0.1
           target_commitish: main
-          name: OpenStock 1.0.0
+          name: OpenStock 1.0.1
           body: |
-            Primeira versão do OpenStock.
+            Correção da conectividade do OpenStock no APK de release.
 
             - Carteira B3 e Estados Unidos
             - Conversão USD/BRL
@@ -60,7 +60,9 @@ jobs:
             - Gráfico consolidado e composição
             - Dados privados no aparelho
 
-            Baixe `OpenStock-v1.0.0.apk` abaixo e instale no Android.
-          files: OpenStock-v1.0.0.apk
-          fail_on_unmatched_files: true
+            - Permissão de internet habilitada no manifesto principal
+            - Validação da chave Finnhub e atualização das cotações restauradas
 
+            Baixe `OpenStock-v1.0.1.apk` abaixo e instale no Android.
+          files: OpenStock-v1.0.1.apk
+          fail_on_unmatched_files: true

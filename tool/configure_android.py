@@ -3,6 +3,14 @@ from pathlib import Path
 manifest = Path('android/app/src/main/AndroidManifest.xml')
 text = manifest.read_text()
 text = text.replace('android:label="openstock"', 'android:label="OpenStock"')
+if 'android.permission.INTERNET' not in text:
+    text = text.replace(
+        '    <application',
+        '    <uses-permission android:name="android.permission.INTERNET" />\n'
+        '    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n\n'
+        '    <application',
+        1,
+    )
 manifest.write_text(text)
 
 main = Path('android/app/src/main/res/drawable/launch_background.xml')
@@ -40,4 +48,3 @@ for folder in ('mipmap-anydpi-v26',):
 </adaptive-icon>
 ''')
     (target / 'ic_launcher_round.xml').write_text((target / 'ic_launcher.xml').read_text())
-
