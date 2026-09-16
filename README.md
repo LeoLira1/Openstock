@@ -129,9 +129,8 @@ flutter test
 flutter build apk --release
 ```
 
-O workflow `release.yml` continua responsável por analisar, testar e gerar o APK
-quando uma versão for publicada. Esta implementação não altera o workflow para
-publicar automaticamente a versão 1.1.0.
+O workflow `release.yml` analisa, testa, gera o APK e publica automaticamente a
+release `v1.1.0` após a integração das alterações na branch `main`.
 
 ## Licença e atribuição
 

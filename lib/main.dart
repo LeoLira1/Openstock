@@ -1421,358 +1421,138 @@ Future<void> _configureTurso(
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignmen}v„æ-¢Gß≤⁄Óù∆≠y–n√£o depende de transa√ß√µes.
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS transactions(
-        id TEXT PRIMARY KEY,
-        asset_key TEXT NOT NULL,
-        type TEXT NOT NULL,
-        quantity REAL NOT NULL,
-        price REAL NOT NULL,
-        exchange_rate REAL,
-        fees REAL NOT NULL DEFAULT 0,
-        transaction_date TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        deleted_at TEXT
-      )
-    ''');
-    await db.execute('''CREATE INDEX IF NOT EXISTS idx_transactions_asset_date
-      ON transactions(asset_key, transaction_date)''');
-  }
-
-  Future<List<InvestmentAsset>> loadAssets(
-      {bool includeDeleted = false}) async {
-    final db = await database;
-    final rows = await db.query(
-      'assets',
-      where: includeDeleted ? null : 'deleted_at IS NULL',
-      orderBy: 'symbol COLLATE NOCASE',
-    );
-    return rows.map(InvestmentAsset.fromMap).toList();
-  }
-
-  Future<InvestmentAsset> saveAsset(InvestmentAsset asset) async {
-    final db = await database;
-    final now = DateTime.now().toUtc();
-    final normalized = asset.copyWith(
-      stableKey: asset.syncKey,
-      createdAt: asset.createdAt ?? now,
-      updatedAt: now,
-    );
-    final values = normalized.toMap()
-      ..remove('id')
-      ..['sync_status'] = 0;
-    if (asset.id == null) {
-      final id = await db.insert('assets', values);
-      return normalized.copyWith(id: id);
-    }
-    await db.update('assets', values, where: 'id = ?', whereArgs: [asset.id]);
-    return normalized;
-  }
-
-  Future<void> saveQuote(int id, MarketQuote quote) async {
-    final db = await database;
-    await db.update(
-      'assets',
-      {
-        'current_price': quote.current,
-        'previous_close': quote.previousClose,
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  Future<void> deleteAsset(int id) async {
-    final db = await database;
-    final now = DateTime.now().toUtc().toIso8601String();
-    await db.update(
-      'assets',
-      {'deleted_at': now, 'updated_at': now, 'sync_status': 0},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  Future<void> upsertHistory(
-    InvestmentAsset asset,
-    List<PricePoint> points, {
-    required String source,
-    bool synced = false,
-  }) async {
-    if (points.isEmpty) return;
-    final db = await database;
-    final now = DateTime.now().toUtc().toIso8601String();
-    await db.transaction((txn) async {
-      final batch = txn.batch();
-      for (final point in points) {
-        batch.rawInsert('''
-          INSERT INTO asset_price_history(
-            asset_key, price_date, close_price, currency, source,
-            created_at, updated_at, sync_status
-          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(asset_key, price_date) DO UPDATE SET
-            close_price = excluded.close_price,
-            currency = excluded.currency,
-            source = excluded.source,
-            updated_at = excluded.updated_at,
-            sync_status = excluded.sync_status
-          WHERE excluded.close_price != asset_price_history.close_price
-             OR excluded.currency != asset_price_history.currency
-             OR excluded.source != asset_price_history.source
-        ''', [
-          asset.syncKey,
-          dateKey(point.date),
-          point.value,
-          asset.currency.name,
-          source,
-          now,
-          now,
-          synced ? 1 : 0,
-        ]);
-      }
-      await batch.commit(noResult: true);
-    });
-  }
-
-  Future<List<PricePoint>> loadAssetHistory(
-    String assetKey, {
-    DateTime? from,
-  }) async {
-    final db = await database;
-    final rows = await db.query(
-      'asset_price_history',
-      columns: ['price_date', 'close_price'],
-      where:
-          from == null ? 'asset_key = ?' : 'asset_key = ? AND price_date >= ?',
-      whereArgs: from == null ? [assetKey] : [assetKey, dateKey(from)],
-      orderBy: 'price_date',
-    );
-    return rows
-        .map((row) => PricePoint(
-              DateTime.parse(row['price_date'] as String),
-              (row['close_price'] as num).toDouble(),
-            ))
-        .toList();
-  }
-
-  Future<DateTime?> newestHistoryDate(String assetKey) async {
-    final db = await database;
-    final rows = await db.rawQuery(
-      'SELECT MAX(price_date) AS date FROM asset_price_history WHERE asset_key = ?',
-      [assetKey],
-    );
-    final value = rows.first['date'] as String?;
-    return value == null ? null : DateTime.parse(value);
-  }
-
-  Future<bool> historyFetchIsFresh(
-    String assetKey,
-    HistoryPeriod period, {
-    Duration maxAge = const Duration(hours: 6),
-  }) async {
-    final db = await database;
-    final rows = await db.query(
-      'history_fetch_state',
-      where: 'asset_key = ? AND period = ?',
-      whereArgs: [assetKey, period.name],
-      limit: 1,
-    );
-    if (rows.isEmpty) return false;
-    final fetched = DateTime.parse(rows.first['fetched_at'] as String);
-    return DateTime.now().toUtc().difference(fetched.toUtc()) < maxAge;
-  }
-
-  Future<void> markHistoryFetched(String assetKey, HistoryPeriod period) async {
-    final db = await database;
-    await db.insert(
-      'history_fetch_state',
-      {
-        'asset_key': assetKey,
-        'period': period.name,
-        'fetched_at': DateTime.now().toUtc().toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<void> saveSnapshot(double total, double cost) async {
-    final db = await database;
-    final now = DateTime.now().toUtc();
-    final date = dateKey(now.toLocal());
-    await db.rawInsert('''
-      INSERT INTO portfolio_snapshots(
-        snapshot_date, total_brl, cost_brl, created_at, updated_at, sync_status
-      ) VALUES(?, ?, ?, ?, ?, 0)
-      ON CONFLICT(snapshot_date) DO UPDATE SET
-        total_brl = excluded.total_brl,
-        cost_brl = excluded.cost_brl,
-        updated_at = excluded.updated_at,
-        sync_status = 0
-    ''', [date, total, cost, now.toIso8601String(), now.toIso8601String()]);
-  }
-
-  Future<List<PricePoint>> loadSnapshots({DateTime? from}) async {
-    final db = await database;
-    final rows = await db.query(
-      'portfolio_snapshots',
-      columns: ['snapshot_date', 'total_brl'],
-      where: from == null ? null : 'snapshot_date >= ?',
-      whereArgs: from == null ? null : [dateKey(from)],
-      orderBy: 'snapshot_date',
-    );
-    return rows
-        .map((row) => PricePoint(
-              DateTime.parse(row['snapshot_date'] as String),
-              (row['total_brl'] as num).toDouble(),
-            ))
-        .toList();
-  }
-
-  Future<void> saveDollarQuote(MarketQuote quote) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      for (final entry in {
-        'usd_brl_current': quote.current.toString(),
-        'usd_brl_previous': quote.previousClose.toString(),
-        'usd_brl_updated_at': DateTime.now().toUtc().toIso8601String(),
-      }.entries) {
-        await txn.insert(
-          'app_state',
-          {'state_key': entry.key, 'state_value': entry.value},
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-      }
-    });
-  }
-
-  Future<MarketQuote?> loadDollarQuote() async {
-    final db = await database;
-    final rows = await db.query(
-      'app_state',
-      where: 'state_key IN (?, ?)',
-      whereArgs: ['usd_brl_current', 'usd_brl_previous'],
-    );
-    final values = <String, String>{
-      for (final row in rows)
-        row['state_key'] as String: row['state_value'] as String,
-    };
-    final current = double.tryParse(values['usd_brl_current'] ?? '');
-    final previous = double.tryParse(values['usd_brl_previous'] ?? '');
-    if (current == null) return null;
-    return MarketQuote(
-      current: current,
-      previousClose: previous ?? current,
-      history: const [],
-    );
-  }
-
-  Future<List<Map<String, Object?>>> unsyncedRows(String table) async {
-    final db = await database;
-    return db.query(table, where: 'sync_status = 0');
-  }
-
-  Future<void> markRowsSynced(
-      String table, String where, List<Object?> args) async {
-    final db = await database;
-    await db.update(table, {'sync_status': 1}, where: where, whereArgs: args);
-  }
-
-  Future<String?> readSyncState(String key) async {
-    final db = await database;
-    final rows = await db.query(
-      'sync_state',
-      where: 'state_key = ?',
-      whereArgs: [key],
-      limit: 1,
-    );
-    return rows.isEmpty ? null : rows.first['state_value'] as String;
-  }
-
-  Future<void> writeSyncState(String key, String value) async {
-    final db = await database;
-    await db.insert(
-      'sync_state',
-      {'state_key': key, 'state_value': value},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<void> applyRemoteAsset(Map<String, Object?> row) async {
-    final db = await database;
-    await db.rawInsert('''
-      INSERT INTO assets(
-        stable_key, symbol, name, market, currency, quantity, average_price,
-        average_exchange_rate, created_at, updated_at, deleted_at, sync_status
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-      ON CONFLICT(stable_key) DO UPDATE SET
-        symbol = excluded.symbol, name = excluded.name, market = excluded.market,
-        currency = excluded.currency, quantity = excluded.quantity,
-        average_price = excluded.average_price,
-        average_exchange_rate = excluded.average_exchange_rate,
-        created_at = excluded.created_at, updated_at = excluded.updated_at,
-        deleted_at = excluded.deleted_at, sync_status = 1
-      WHERE excluded.updated_at > assets.updated_at
-    ''', [
-      row['stable_key'],
-      row['symbol'],
-      row['name'],
-      row['market'],
-      row['currency'],
-      row['quantity'],
-      row['average_price'],
-      row['average_exchange_rate'],
-      row['created_at'],
-      row['updated_at'],
-      row['deleted_at'],
-    ]);
-  }
-
-  Future<void> applyRemoteHistory(Map<String, Object?> row) async {
-    final db = await database;
-    await db.rawInsert('''
-      INSERT INTO asset_price_history(
-        asset_key, price_date, close_price, currency, source,
-        created_at, updated_at, sync_status
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, 1)
-      ON CONFLICT(asset_key, price_date) DO UPDATE SET
-        close_price = excluded.close_price, currency = excluded.currency,
-        source = excluded.source, updated_at = excluded.updated_at,
-        sync_status = 1
-      WHERE excluded.updated_at > asset_price_history.updated_at
-    ''', [
-      row['asset_key'],
-      row['price_date'],
-      row['close_price'],
-      row['currency'],
-      row['source'],
-      row['created_at'],
-      row['updated_at'],
-    ]);
-  }
-
-  Future<void> applyRemoteSnapshot(Map<String, Object?> row) async {
-    final db = await database;
-    await db.rawInsert('''
-      INSERT INTO portfolio_snapshots(
-        snapshot_date, total_brl, cost_brl, created_at, updated_at, sync_status
-      ) VALUES(?, ?, ?, ?, ?, 1)
-      ON CONFLICT(snapshot_date) DO UPDATE SET
-        total_brl = excluded.total_brl, cost_brl = excluded.cost_brl,
-        created_at = excluded.created_at, updated_at = excluded.updated_at,
-        sync_status = 1
-      WHERE excluded.updated_at > portfolio_snapshots.updated_at
-    ''', [
-      row['snapshot_date'],
-      row['total_brl'],
-      row['cost_brl'],
-      row['created_at'],
-      row['updated_at'],
-    ]);
-  }
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Informe a URL do banco e um token de banco de dados. As credenciais n√£o s√£o gravadas no c√≥digo nem sincronizadas.',
+                style: TextStyle(color: _muted, height: 1.4),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: url,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'TURSO_DATABASE_URL',
+                  hintText: 'libsql://seu-banco.turso.io',
+                  prefixIcon: Icon(Icons.dns_outlined),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: token,
+                obscureText: true,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: const InputDecoration(
+                  labelText: 'TURSO_AUTH_TOKEN',
+                  prefixIcon: Icon(Icons.key_rounded),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: saving ? null : () => Navigator.pop(dialogContext),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: saving
+                ? null
+                : () async {
+                    if (url.text.trim().isEmpty || token.text.trim().isEmpty) {
+                      return;
+                    }
+                    setDialogState(() => saving = true);
+                    final error =
+                        await controller.configureTurso(url.text, token.text);
+                    if (!dialogContext.mounted) return;
+                    if (error == null) {
+                      Navigator.pop(dialogContext);
+                    } else {
+                      setDialogState(() => saving = false);
+                      ScaffoldMessenger.of(context)
+                          .showSnackBar(SnackBar(content: Text(error)));
+                    }
+                  },
+            child: saving
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Validar e sincronizar'),
+          ),
+        ],
+      ),
+    ),
+  );
+  url.dispose();
+  token.dispose();
 }
 
-String dateKey(DateTime date) => '${date.year.toString().padLeft(4, '0')}-'
-    '${date.month.toString().padLeft(2, '0')}-'
-    '${date.day.toString().padLeft(2, '0')}';
+Future<void> _removeTurso(
+    BuildContext context, PortfolioController controller) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Desconectar do Turso?'),
+      content: const Text(
+        'Os dados locais ser√£o mantidos. Apenas as credenciais deste aparelho ser√£o removidas.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Desconectar'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed == true) await controller.removeTurso();
+}
+
+List<InvestmentAsset> _sortedByValue(PortfolioController controller) =>
+    [...controller.assets]..sort((a, b) =>
+        controller.currentValue(b).compareTo(controller.currentValue(a)));
+
+List<InvestmentAsset> _sortedByDay(PortfolioController controller) =>
+    [...controller.assets]..sort((a, b) => controller
+        .assetDayResult(b)
+        .abs()
+        .compareTo(controller.assetDayResult(a).abs()));
+
+final _brl =
+    NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$', decimalDigits: 2);
+final _usd =
+    NumberFormat.currency(locale: 'pt_BR', symbol: 'US\$', decimalDigits: 2);
+
+String _money(double value, {String? symbol}) => symbol == null
+    ? _brl.format(value)
+    : NumberFormat.currency(locale: 'pt_BR', symbol: symbol, decimalDigits: 2)
+        .format(value);
+String _assetMoney(double value, AssetCurrency currency) =>
+    (currency == AssetCurrency.brl ? _brl : _usd).format(value);
+String _signedMoney(double value) =>
+    '${value >= 0 ? '+' : '-'}${_brl.format(value.abs())}';
+String _signedPercent(double value) =>
+    '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2).replaceAll('.', ',')}%';
+String _quantity(double value) =>
+    NumberFormat.decimalPattern('pt_BR').format(value);
+String _plain(double value) => value.toString().replaceAll('.', ',');
+String _marketName(AssetMarket market) => switch (market) {
+      AssetMarket.b3 => 'B3',
+      AssetMarket.usa => 'EUA',
+      AssetMarket.manual => 'Manual',
+    };
+
+double? _parseNumber(String text) {
+  final clean = text.trim();
+  if (clean.isEmpty) return null;
+  return double.tryParse(clean.contains(',')
+      ? clean.replaceAll('.', '').replaceAll(',', '.')
+      : clean);
+}
