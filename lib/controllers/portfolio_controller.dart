@@ -1,28 +1,34 @@
-import 'dart:math' as math;
-
 import 'package:flutter/foundation.dart';
 
+import '../models/history_models.dart';
 import '../models/investment_asset.dart';
 import '../services/database_service.dart';
 import '../services/quote_service.dart';
 import '../services/settings_service.dart';
+import '../services/sync_service.dart';
+import '../services/turso_service.dart';
 
 class PortfolioController extends ChangeNotifier {
   PortfolioController({
     DatabaseService? database,
     QuoteService? quotes,
     SettingsService? settings,
-  })
-      : _database = database ?? DatabaseService.instance,
+    TursoService? turso,
+  })  : _database = database ?? DatabaseService.instance,
         _quotes = quotes ?? QuoteService(),
-        _settings = settings ?? const SettingsService();
+        _settings = settings ?? const SettingsService(),
+        _turso = turso ?? TursoService();
 
   final DatabaseService _database;
   final QuoteService _quotes;
   final SettingsService _settings;
+  final TursoService _turso;
 
   List<InvestmentAsset> assets = [];
   List<PricePoint> portfolioHistory = [];
+  final Map<String, List<PricePoint>> assetHistories = {};
+  final Set<String> historyLoading = {};
+  final Map<String, String> historyErrors = {};
   MarketQuote? dollarQuote;
   bool loading = true;
   bool refreshing = false;
@@ -33,10 +39,18 @@ class PortfolioController extends ChangeNotifier {
   String? finnhubConnectionMessage;
   String? _finnhubKey;
 
-  final Map<int, MarketQuote> _marketQuotes = {};
+  bool tursoConfigured = false;
+  bool syncing = false;
+  DateTime? lastSync;
+  String? syncMessage;
+  bool _historyDirtyForSync = false;
+  bool _syncRequested = false;
 
   bool get hasForeignAssets =>
       assets.any((asset) => asset.currency == AssetCurrency.usd);
+
+  bool isHistoryLoading(String assetKey) =>
+      historyLoading.any((entry) => entry.startsWith('$assetKey:'));
 
   double get usdBrl => dollarQuote?.current ?? 0;
   double get previousUsdBrl => dollarQuote?.previousClose ?? usdBrl;
@@ -50,7 +64,8 @@ class PortfolioController extends ChangeNotifier {
   }
 
   double previousValue(InvestmentAsset asset) {
-    final price = asset.previousClose ?? asset.currentPrice ?? asset.averagePrice;
+    final price =
+        asset.previousClose ?? asset.currentPrice ?? asset.averagePrice;
     final fx = asset.currency == AssetCurrency.usd
         ? (previousUsdBrl > 0 ? previousUsdBrl : asset.averageExchangeRate)
         : 1.0;
@@ -67,7 +82,8 @@ class PortfolioController extends ChangeNotifier {
       assets.fold(0, (sum, a) => sum + previousValue(a));
   double get totalCost => assets.fold(0, (sum, a) => sum + costValue(a));
   double get dayResult => totalValue - previousTotal;
-  double get dayPercent => previousTotal == 0 ? 0 : dayResult / previousTotal * 100;
+  double get dayPercent =>
+      previousTotal == 0 ? 0 : dayResult / previousTotal * 100;
   double get totalResult => totalValue - totalCost;
   double get totalPercent => totalCost == 0 ? 0 : totalResult / totalCost * 100;
 
@@ -93,16 +109,27 @@ class PortfolioController extends ChangeNotifier {
       _finnhubKey = finnhubKey;
       finnhubConfigured = finnhubKey != null && finnhubKey.isNotEmpty;
       _quotes.configureFinnhub(finnhubKey);
-      assets = await _database.loadAssets();
-      dollarQuote = await _database.loadDollarQuote();
-      portfolioHistory = await _database.loadSnapshots();
+      final tursoCredentials = await _settings.loadTursoCredentials();
+      if (tursoCredentials != null) {
+        _turso.configure(tursoCredentials.url, tursoCredentials.token);
+        tursoConfigured = true;
+        await synchronize(silent: true);
+      }
+      await _reloadLocalData();
       if (assets.isNotEmpty) await refresh();
     } catch (error) {
-      message = 'Não foi possível abrir os dados: $error';
+      message = 'Não foi possível abrir todos os dados: $error';
+      await _reloadLocalData();
     } finally {
       loading = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _reloadLocalData() async {
+    assets = await _database.loadAssets();
+    dollarQuote = await _database.loadDollarQuote();
+    portfolioHistory = await _database.loadSnapshots();
   }
 
   Future<String?> saveFinnhubKey(String key) async {
@@ -147,7 +174,71 @@ class PortfolioController extends ChangeNotifier {
     return finnhubConnectionMessage!;
   }
 
-  Future<void> refresh() async {
+  Future<String?> configureTurso(String url, String token) async {
+    try {
+      _turso.configure(url, token);
+      await _turso.testConnection();
+      tursoConfigured = true;
+      syncMessage = 'Conexão com o Turso validada.';
+      notifyListeners();
+      final synchronized = await synchronize();
+      if (!synchronized) {
+        tursoConfigured = false;
+        _turso.clear();
+        return syncMessage ??
+            'O Turso não permitiu criar ou sincronizar as tabelas.';
+      }
+      await _settings.saveTursoCredentials(url, token);
+      if (assets.isNotEmpty) await refresh();
+      return null;
+    } catch (error) {
+      syncMessage = error.toString();
+      notifyListeners();
+      return 'Não foi possível conectar: $error';
+    }
+  }
+
+  Future<void> removeTurso() async {
+    await _settings.clearTursoCredentials();
+    _turso.clear();
+    tursoConfigured = false;
+    syncMessage = null;
+    notifyListeners();
+  }
+
+  Future<bool> synchronize({bool silent = false}) async {
+    if (!tursoConfigured) return false;
+    if (syncing) {
+      _syncRequested = true;
+      return false;
+    }
+    var succeeded = false;
+    syncing = true;
+    if (!silent) syncMessage = null;
+    notifyListeners();
+    try {
+      final report = await SyncService(_database, _turso).synchronize();
+      _historyDirtyForSync = false;
+      lastSync = DateTime.now();
+      syncMessage = 'Sincronizado: ${report.uploaded} enviados, '
+          '${report.downloaded} recebidos.';
+      await _reloadLocalData();
+      succeeded = true;
+    } catch (error) {
+      syncMessage =
+          'Sem sincronização: $error. Os dados locais continuam ativos.';
+    } finally {
+      syncing = false;
+      notifyListeners();
+      if (_syncRequested) {
+        _syncRequested = false;
+        await synchronize(silent: true);
+      }
+    }
+    return succeeded;
+  }
+
+  Future<void> refresh({bool syncAfter = true}) async {
     if (refreshing || assets.isEmpty) return;
     refreshing = true;
     message = null;
@@ -159,7 +250,7 @@ class PortfolioController extends ChangeNotifier {
         dollarQuote = await _quotes.fetchDollar();
         await _database.saveDollarQuote(dollarQuote!);
       } catch (_) {
-        if (dollarQuote == null) errors.add('Não foi possível consultar o dólar');
+        if (dollarQuote == null) errors.add('dólar');
       }
     }
 
@@ -168,50 +259,143 @@ class PortfolioController extends ChangeNotifier {
       if (asset.market == AssetMarket.manual) continue;
       try {
         final quote = await _quotes.fetch(asset);
-        if (asset.id != null) {
-          _marketQuotes[asset.id!] = quote;
-          await _database.saveQuote(asset.id!, quote);
-        }
+        if (asset.id != null) await _database.saveQuote(asset.id!, quote);
+        await _database.upsertHistory(
+          asset,
+          quote.history,
+          source: quote.historySource,
+        );
         assets[i] = asset.copyWith(
           currentPrice: quote.current,
           previousClose: quote.previousClose,
-          updatedAt: DateTime.now(),
         );
       } catch (_) {
         errors.add(asset.symbol);
       }
     }
 
-    _buildMarketHistory();
     if (totalValue > 0) {
       await _database.saveSnapshot(totalValue, totalCost);
-      if (portfolioHistory.length < 2) {
-        portfolioHistory = await _database.loadSnapshots();
-      }
+      portfolioHistory = await _database.loadSnapshots();
     }
     lastRefresh = DateTime.now();
     if (errors.isNotEmpty) {
-      message = 'Sem atualização para: ${errors.join(', ')}. Mantive o último valor.';
+      message = 'Sem atualização para: ${errors.join(', ')}. '
+          'Os demais ativos foram atualizados e o último valor foi mantido.';
     }
     refreshing = false;
     notifyListeners();
+    if (syncAfter && tursoConfigured) await synchronize(silent: true);
+  }
+
+  Future<void> ensureHistory(
+    InvestmentAsset asset,
+    HistoryPeriod period, {
+    bool force = false,
+    bool syncAfter = true,
+  }) async {
+    final key = asset.syncKey;
+    final taskKey = '$key:${period.name}';
+    if (historyLoading.contains(taskKey)) return;
+    historyLoading.add(taskKey);
+    historyErrors.remove(key);
+    notifyListeners();
+    final from = period.startFrom(DateTime.now());
+    try {
+      var cached = await _database.loadAssetHistory(key, from: from);
+      assetHistories[key] = await _database.loadAssetHistory(key);
+      notifyListeners();
+      final fresh = await _database.historyFetchIsFresh(key, period);
+      if (!force && fresh) return;
+      if (asset.market == AssetMarket.manual) {
+        if (cached.isEmpty) historyErrors[key] = 'Ativo manual sem histórico.';
+        return;
+      }
+
+      DateTime? incrementalStart;
+      final requestedStart = period.startFrom(DateTime.now());
+      final coversStart = requestedStart != null &&
+          cached.isNotEmpty &&
+          !cached.first.date
+              .isAfter(requestedStart.add(const Duration(days: 7)));
+      if (coversStart && cached.isNotEmpty) {
+        incrementalStart = cached.last.date;
+      }
+      final fetched = await _quotes.fetchHistory(
+        asset,
+        period,
+        start: incrementalStart,
+      );
+      await _database.upsertHistory(asset, fetched, source: 'yahoo');
+      if (fetched.isNotEmpty) _historyDirtyForSync = true;
+      await _database.markHistoryFetched(key, period);
+      cached = await _database.loadAssetHistory(key, from: from);
+      assetHistories[key] = await _database.loadAssetHistory(key);
+      if (cached.isEmpty) historyErrors[key] = 'Nenhum fechamento disponível.';
+      if (syncAfter && tursoConfigured && _historyDirtyForSync) {
+        await synchronize(silent: true);
+      }
+    } catch (error) {
+      historyErrors[key] = 'Histórico indisponível: $error';
+    } finally {
+      historyLoading.remove(taskKey);
+      notifyListeners();
+    }
+  }
+
+  Future<void> loadComparison(
+    Iterable<InvestmentAsset> selected,
+    HistoryPeriod period,
+  ) async {
+    await Future.wait(selected.map(
+      (asset) => ensureHistory(asset, period, syncAfter: false),
+    ));
+    portfolioHistory = await _database.loadSnapshots(
+      from: period.startFrom(DateTime.now()),
+    );
+    notifyListeners();
+    if (tursoConfigured && _historyDirtyForSync) {
+      await synchronize(silent: true);
+    }
   }
 
   Future<String?> saveAsset(InvestmentAsset asset) async {
     try {
+      final symbol = asset.symbol.trim().toUpperCase();
+      final now = DateTime.now().toUtc();
       final normalized = asset.copyWith(
-        symbol: asset.symbol.trim().toUpperCase(),
-        name: asset.name.trim().isEmpty
-            ? asset.symbol.trim().toUpperCase()
-            : asset.name.trim(),
+        stableKey: buildAssetKey(asset.market, symbol),
+        symbol: symbol,
+        name: asset.name.trim().isEmpty ? symbol : asset.name.trim(),
+        createdAt: asset.createdAt ?? now,
         previousClose: asset.market == AssetMarket.manual && asset.id != null
             ? assets.firstWhere((a) => a.id == asset.id).currentPrice
             : asset.previousClose,
       );
-      final saved = await _database.saveAsset(normalized);
-      final index = assets.indexWhere((item) => item.id == saved.id);
+      var assetToSave = normalized;
+      var index = assets.indexWhere((item) => item.id == asset.id);
+      if (index >= 0 && assets[index].syncKey != normalized.syncKey) {
+        // Mantém um tombstone da identidade antiga para os outros aparelhos.
+        await _database.deleteAsset(assets[index].id!);
+        assetToSave = InvestmentAsset(
+          stableKey: normalized.syncKey,
+          symbol: normalized.symbol,
+          name: normalized.name,
+          market: normalized.market,
+          currency: normalized.currency,
+          quantity: normalized.quantity,
+          averagePrice: normalized.averagePrice,
+          averageExchangeRate: normalized.averageExchangeRate,
+          currentPrice: normalized.currentPrice,
+          previousClose: normalized.previousClose,
+          createdAt: now,
+        );
+      }
+      final saved = await _database.saveAsset(assetToSave);
+      index = assets.indexWhere((item) => item.id == asset.id);
       if (index < 0) {
-        assets = [...assets, saved]..sort((a, b) => a.symbol.compareTo(b.symbol));
+        assets = [...assets, saved]
+          ..sort((a, b) => a.symbol.compareTo(b.symbol));
       } else {
         assets[index] = saved;
       }
@@ -229,50 +413,9 @@ class PortfolioController extends ChangeNotifier {
   Future<void> deleteAsset(InvestmentAsset asset) async {
     if (asset.id == null) return;
     await _database.deleteAsset(asset.id!);
-    _marketQuotes.remove(asset.id);
     assets.removeWhere((item) => item.id == asset.id);
-    _buildMarketHistory();
+    assetHistories.remove(asset.syncKey);
     notifyListeners();
+    if (tursoConfigured) await synchronize(silent: true);
   }
-
-  void _buildMarketHistory() {
-    final datedQuotes = _marketQuotes.values
-        .expand((quote) => quote.history)
-        .map((point) => _day(point.date))
-        .toSet()
-        .toList()
-      ..sort();
-    if (datedQuotes.length < 2) return;
-
-    final result = <PricePoint>[];
-    for (final date in datedQuotes.skip(math.max(0, datedQuotes.length - 30))) {
-      var total = 0.0;
-      final fx = _valueOn(dollarQuote?.history ?? const [], date) ??
-          dollarQuote?.current ??
-          1;
-      for (final asset in assets) {
-        final history = asset.id == null
-            ? const <PricePoint>[]
-            : (_marketQuotes[asset.id!]?.history ?? const <PricePoint>[]);
-        final price = _valueOn(history, date) ??
-            asset.currentPrice ??
-            asset.averagePrice;
-        total += price *
-            asset.quantity *
-            (asset.currency == AssetCurrency.usd ? fx : 1);
-      }
-      if (total > 0) result.add(PricePoint(date, total));
-    }
-    if (result.length >= 2) portfolioHistory = result;
-  }
-
-  double? _valueOn(List<PricePoint> points, DateTime date) {
-    double? value;
-    for (final point in points) {
-      if (!_day(point.date).isAfter(date)) value = point.value;
-    }
-    return value;
-  }
-
-  DateTime _day(DateTime date) => DateTime(date.year, date.month, date.day);
 }

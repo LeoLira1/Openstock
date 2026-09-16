@@ -40,4 +40,3 @@ void main() {
     expect(asset.hasQuote, isFalse);
   });
 }
-

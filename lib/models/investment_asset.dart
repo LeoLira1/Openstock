@@ -5,6 +5,7 @@ enum AssetCurrency { brl, usd }
 class InvestmentAsset {
   const InvestmentAsset({
     this.id,
+    this.stableKey,
     required this.symbol,
     required this.name,
     required this.market,
@@ -15,9 +16,12 @@ class InvestmentAsset {
     this.currentPrice,
     this.previousClose,
     this.updatedAt,
+    this.createdAt,
+    this.deletedAt,
   });
 
   final int? id;
+  final String? stableKey;
   final String symbol;
   final String name;
   final AssetMarket market;
@@ -28,11 +32,16 @@ class InvestmentAsset {
   final double? currentPrice;
   final double? previousClose;
   final DateTime? updatedAt;
+  final DateTime? createdAt;
+  final DateTime? deletedAt;
+
+  String get syncKey => stableKey ?? buildAssetKey(market, symbol);
 
   bool get hasQuote => currentPrice != null;
 
   InvestmentAsset copyWith({
     int? id,
+    String? stableKey,
     String? symbol,
     String? name,
     AssetMarket? market,
@@ -43,9 +52,12 @@ class InvestmentAsset {
     double? currentPrice,
     double? previousClose,
     DateTime? updatedAt,
+    DateTime? createdAt,
+    DateTime? deletedAt,
   }) {
     return InvestmentAsset(
       id: id ?? this.id,
+      stableKey: stableKey ?? this.stableKey,
       symbol: symbol ?? this.symbol,
       name: name ?? this.name,
       market: market ?? this.market,
@@ -56,11 +68,14 @@ class InvestmentAsset {
       currentPrice: currentPrice ?? this.currentPrice,
       previousClose: previousClose ?? this.previousClose,
       updatedAt: updatedAt ?? this.updatedAt,
+      createdAt: createdAt ?? this.createdAt,
+      deletedAt: deletedAt ?? this.deletedAt,
     );
   }
 
   Map<String, Object?> toMap() => {
         'id': id,
+        'stable_key': syncKey,
         'symbol': symbol,
         'name': name,
         'market': market.name,
@@ -71,11 +86,14 @@ class InvestmentAsset {
         'current_price': currentPrice,
         'previous_close': previousClose,
         'updated_at': updatedAt?.toIso8601String(),
+        'created_at': createdAt?.toIso8601String(),
+        'deleted_at': deletedAt?.toIso8601String(),
       };
 
   factory InvestmentAsset.fromMap(Map<String, Object?> map) {
     return InvestmentAsset(
       id: map['id'] as int?,
+      stableKey: map['stable_key'] as String?,
       symbol: map['symbol'] as String,
       name: map['name'] as String,
       market: AssetMarket.values.byName(map['market'] as String),
@@ -89,8 +107,19 @@ class InvestmentAsset {
       updatedAt: map['updated_at'] == null
           ? null
           : DateTime.parse(map['updated_at'] as String),
+      createdAt: map['created_at'] == null
+          ? null
+          : DateTime.parse(map['created_at'] as String),
+      deletedAt: map['deleted_at'] == null
+          ? null
+          : DateTime.parse(map['deleted_at'] as String),
     );
   }
+}
+
+String buildAssetKey(AssetMarket market, String symbol) {
+  final normalized = symbol.trim().toUpperCase().replaceAll('.SA', '');
+  return '${market.name}:$normalized';
 }
 
 class PricePoint {
@@ -105,10 +134,11 @@ class MarketQuote {
     required this.current,
     required this.previousClose,
     required this.history,
+    this.historySource = 'unknown',
   });
 
   final double current;
   final double previousClose;
   final List<PricePoint> history;
+  final String historySource;
 }
-

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/investment_asset.dart';
+import '../models/history_models.dart';
 
 class QuoteException implements Exception {
   const QuoteException(this.message);
@@ -31,8 +32,29 @@ class QuoteService {
           previousClose:
               asset.previousClose ?? asset.currentPrice ?? asset.averagePrice,
           history: const [],
+          historySource: 'manual',
         )),
     };
+  }
+
+  /// Obtém somente fechamentos reais publicados pelo provedor.
+  /// Não interpola fins de semana, feriados ou valores ausentes.
+  Future<List<PricePoint>> fetchHistory(
+    InvestmentAsset asset,
+    HistoryPeriod period, {
+    DateTime? start,
+  }) async {
+    if (asset.market == AssetMarket.manual) return const [];
+    final symbol = asset.market == AssetMarket.b3
+        ? '${asset.symbol.trim().toUpperCase().replaceAll('.SA', '')}.SA'
+        : asset.symbol.trim().toUpperCase();
+    final quote = await _fetchYahoo(
+      symbol,
+      range: period.providerRange,
+      start: start,
+      end: DateTime.now().toUtc().add(const Duration(days: 1)),
+    );
+    return quote.history;
   }
 
   Future<MarketQuote> fetchDollar() => _fetchYahoo('BRL=X');
@@ -59,6 +81,7 @@ class QuoteService {
           current: live.current,
           previousClose: live.previousClose,
           history: history?.history ?? const [],
+          historySource: history?.historySource ?? live.historySource,
         );
       } catch (_) {
         // Mantém a cotação histórica pública quando a chave não tem acesso à B3.
@@ -90,6 +113,7 @@ class QuoteService {
         current: live.current,
         previousClose: live.previousClose,
         history: history?.history ?? const [],
+        historySource: history?.historySource ?? live.historySource,
       );
     } catch (_) {
       if (history != null) return history;
@@ -130,12 +154,14 @@ class QuoteService {
     final current = _number(data?['c']);
     final previous = _number(data?['pc']);
     if (current == null || current <= 0) {
-      throw const QuoteException('Chave Finnhub inválida ou cotação indisponível');
+      throw const QuoteException(
+          'Chave Finnhub inválida ou cotação indisponível');
     }
     return MarketQuote(
       current: current,
       previousClose: previous ?? current,
       history: const [],
+      historySource: 'finnhub',
     );
   }
 
@@ -146,7 +172,8 @@ class QuoteService {
       '/api/quote/$symbol',
       {'range': '1mo', 'interval': '1d', 'fundamental': 'false'},
     );
-    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    final response =
+        await _client.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw QuoteException('B3: resposta ${response.statusCode} para $symbol');
     }
@@ -158,7 +185,9 @@ class QuoteService {
     final data = results.first as Map<String, dynamic>;
     final current = _number(data['regularMarketPrice']);
     final previous = _number(data['regularMarketPreviousClose']);
-    if (current == null) throw QuoteException('Cotação indisponível para $symbol');
+    if (current == null) {
+      throw QuoteException('Cotação indisponível para $symbol');
+    }
     final history = <PricePoint>[];
     for (final item in (data['historicalDataPrice'] as List<dynamic>? ?? [])) {
       final row = item as Map<String, dynamic>;
@@ -180,26 +209,47 @@ class QuoteService {
         providerPrevious: previous,
       ),
       history: history,
+      historySource: 'brapi',
     );
   }
 
-  Future<MarketQuote> _fetchYahoo(String rawSymbol) async {
+  Future<MarketQuote> _fetchYahoo(
+    String rawSymbol, {
+    String range = '1mo',
+    DateTime? start,
+    DateTime? end,
+  }) async {
     final symbol = rawSymbol.trim().toUpperCase();
+    final query = <String, String>{
+      'interval': '1d',
+      'events': 'history',
+      if (start == null) 'range': range,
+      if (start != null)
+        'period1': (start.toUtc().millisecondsSinceEpoch ~/ 1000).toString(),
+      if (start != null)
+        'period2':
+            ((end ?? DateTime.now().toUtc()).toUtc().millisecondsSinceEpoch ~/
+                    1000)
+                .toString(),
+    };
     final uri = Uri.https(
       'query1.finance.yahoo.com',
       '/v8/finance/chart/$symbol',
-      {'range': '1mo', 'interval': '1d', 'events': 'history'},
+      query,
     );
     final response = await _client.get(
       uri,
       headers: {'User-Agent': 'Mozilla/5.0 OpenStock/1.0'},
     ).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
-      throw QuoteException('Mercado internacional: resposta ${response.statusCode}');
+      throw QuoteException(
+          'Mercado internacional: resposta ${response.statusCode}');
     }
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     final chart = body['chart'] as Map<String, dynamic>?;
-    if (chart?['error'] != null) throw QuoteException('Símbolo $symbol inválido');
+    if (chart?['error'] != null) {
+      throw QuoteException('Símbolo $symbol inválido');
+    }
     final results = chart?['result'] as List<dynamic>?;
     if (results == null || results.isEmpty) {
       throw QuoteException('Cotação indisponível para $symbol');
@@ -207,7 +257,9 @@ class QuoteService {
     final data = results.first as Map<String, dynamic>;
     final meta = data['meta'] as Map<String, dynamic>;
     final current = _number(meta['regularMarketPrice']);
-    if (current == null) throw QuoteException('Cotação indisponível para $symbol');
+    if (current == null) {
+      throw QuoteException('Cotação indisponível para $symbol');
+    }
     final timestamps = (data['timestamp'] as List<dynamic>? ?? const []);
     final indicators = data['indicators'] as Map<String, dynamic>?;
     final quoteList = indicators?['quote'] as List<dynamic>?;
@@ -220,7 +272,8 @@ class QuoteService {
       final close = _number(closes[i]);
       if (close != null) {
         history.add(PricePoint(
-          DateTime.fromMillisecondsSinceEpoch((timestamps[i] as num).toInt() * 1000),
+          DateTime.fromMillisecondsSinceEpoch(
+              (timestamps[i] as num).toInt() * 1000),
           close,
         ));
       }
@@ -232,7 +285,12 @@ class QuoteService {
       providerPrevious: _number(meta['chartPreviousClose']) ??
           _number(meta['regularMarketPreviousClose']),
     );
-    return MarketQuote(current: current, previousClose: previous, history: history);
+    return MarketQuote(
+      current: current,
+      previousClose: previous,
+      history: history,
+      historySource: 'yahoo',
+    );
   }
 
   double? _number(Object? value) => value is num ? value.toDouble() : null;
@@ -253,7 +311,8 @@ double resolvePreviousClose({
     final ordered = [...history]..sort((a, b) => a.date.compareTo(b.date));
     final localNow = now ?? DateTime.now();
     final startOfToday = DateTime(localNow.year, localNow.month, localNow.day);
-    final completed = ordered.where((point) => point.date.isBefore(startOfToday));
+    final completed =
+        ordered.where((point) => point.date.isBefore(startOfToday));
     if (completed.isNotEmpty) return completed.last.value;
     if (ordered.length > 1) return ordered[ordered.length - 2].value;
   }
