@@ -44,27 +44,27 @@ jobs:
         run: flutter build apk --release
 
       - name: Nomear APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.0.4.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.1.0.apk
 
       - name: Publicar release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.4
+          tag_name: v1.1.0
           target_commitish: main
-          name: OpenStock 1.0.4
+          name: OpenStock 1.1.0
           body: |
-            Correção do cálculo da variação diária dos ativos.
+            Histórico comparativo e sincronização entre dispositivos.
 
             - Carteira B3 e Estados Unidos
             - Conversão USD/BRL
             - Resultado diário e acumulado
-            - Gráfico consolidado e composição
-            - Dados privados no aparelho
+            - Comparação normalizada de vários ativos
+            - Períodos de 1 mês até o máximo disponível
+            - Histórico persistente de fechamentos
+            - Detalhes do ativo e linha do preço médio
+            - Sincronização Turso opcional e funcionamento offline
+            - Migração não destrutiva dos dados existentes
 
-            - Fechamento anterior obtido do último pregão concluído
-            - Proteção contra metadados de fechamento desatualizados
-            - Resultado de cada ativo identificado como Hoje e Total
-
-            Baixe `OpenStock-v1.0.4.apk` abaixo e instale no Android.
-          files: OpenStock-v1.0.4.apk
+            Baixe `OpenStock-v1.1.0.apk` abaixo e instale no Android.
+          files: OpenStock-v1.1.0.apk
           fail_on_unmatched_files: true

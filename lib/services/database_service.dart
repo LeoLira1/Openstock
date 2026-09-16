@@ -1,10 +1,14 @@
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../models/history_models.dart';
 import '../models/investment_asset.dart';
+
+const databaseVersion = 3;
 
 class DatabaseService {
   DatabaseService._();
+  DatabaseService.forTesting(Database database) : _database = database;
 
   static final DatabaseService instance = DatabaseService._();
   Database? _database;
@@ -14,61 +18,171 @@ class DatabaseService {
     final root = await getDatabasesPath();
     _database = await openDatabase(
       join(root, 'openstock.db'),
-      version: 1,
-      onCreate: (db, version) async {
-        await db.execute('''
-          CREATE TABLE assets(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            name TEXT NOT NULL,
-            market TEXT NOT NULL,
-            currency TEXT NOT NULL,
-            quantity REAL NOT NULL,
-            average_price REAL NOT NULL,
-            average_exchange_rate REAL NOT NULL DEFAULT 1,
-            current_price REAL,
-            previous_close REAL,
-            updated_at TEXT
-          )
-        ''');
-        await db.execute('''
-          CREATE UNIQUE INDEX idx_assets_symbol_market
-          ON assets(symbol, market)
-        ''');
-        await db.execute('''
-          CREATE TABLE portfolio_snapshots(
-            snapshot_date TEXT PRIMARY KEY,
-            total_brl REAL NOT NULL,
-            cost_brl REAL NOT NULL,
-            created_at TEXT NOT NULL
-          )
-        ''');
-        await db.execute('''
-          CREATE TABLE app_state(
-            state_key TEXT PRIMARY KEY,
-            state_value TEXT NOT NULL
-          )
-        ''');
-      },
+      version: databaseVersion,
+      onCreate: createSchema,
+      onUpgrade: migrateSchema,
     );
     return _database!;
   }
 
-  Future<List<InvestmentAsset>> loadAssets() async {
+  static Future<void> createSchema(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE assets(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stable_key TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        name TEXT NOT NULL,
+        market TEXT NOT NULL,
+        currency TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        average_price REAL NOT NULL,
+        average_exchange_rate REAL NOT NULL DEFAULT 1,
+        current_price REAL,
+        previous_close REAL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        sync_status INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await _createSupportingSchema(db);
+  }
+
+  static Future<void> migrateSchema(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    if (oldVersion < 2) {
+      await _addColumnIfMissing(db, 'assets', 'stable_key', 'TEXT');
+      await _addColumnIfMissing(db, 'assets', 'created_at', 'TEXT');
+      await _addColumnIfMissing(db, 'assets', 'deleted_at', 'TEXT');
+      await _addColumnIfMissing(
+          db, 'assets', 'sync_status', 'INTEGER NOT NULL DEFAULT 0');
+      final now = DateTime.now().toUtc().toIso8601String();
+      await db.rawUpdate('''
+        UPDATE assets
+        SET stable_key = lower(market) || ':' || upper(replace(symbol, '.SA', '')),
+            created_at = COALESCE(created_at, updated_at, ?),
+            updated_at = COALESCE(updated_at, ?)
+        WHERE stable_key IS NULL OR created_at IS NULL OR updated_at IS NULL
+      ''', [now, now]);
+      await _addColumnIfMissing(
+          db, 'portfolio_snapshots', 'updated_at', 'TEXT');
+      await _addColumnIfMissing(db, 'portfolio_snapshots', 'sync_status',
+          'INTEGER NOT NULL DEFAULT 0');
+      await db.rawUpdate('''
+        UPDATE portfolio_snapshots
+        SET updated_at = COALESCE(updated_at, created_at)
+        WHERE updated_at IS NULL
+      ''');
+    }
+    await _createSupportingSchema(db);
+  }
+
+  static Future<void> _addColumnIfMissing(
+    Database db,
+    String table,
+    String column,
+    String definition,
+  ) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    if (!columns.any((row) => row['name'] == column)) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
+    }
+  }
+
+  static Future<void> _createSupportingSchema(Database db) async {
+    await db.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_stable_key
+      ON assets(stable_key)''');
+    await db
+        .execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_symbol_market
+      ON assets(symbol, market)''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS portfolio_snapshots(
+        snapshot_date TEXT PRIMARY KEY,
+        total_brl REAL NOT NULL,
+        cost_brl REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS app_state(
+      state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL)''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS asset_price_history(
+        asset_key TEXT NOT NULL,
+        price_date TEXT NOT NULL,
+        close_price REAL NOT NULL,
+        currency TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(asset_key, price_date)
+      )
+    ''');
+    await db.execute('''CREATE INDEX IF NOT EXISTS idx_history_asset_date
+      ON asset_price_history(asset_key, price_date)''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS history_fetch_state(
+        asset_key TEXT NOT NULL,
+        period TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY(asset_key, period)
+      )
+    ''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS sync_state(
+      state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL)''');
+    // Preparação estrutural; o cálculo atual não depende de transações.
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS transactions(
+        id TEXT PRIMARY KEY,
+        asset_key TEXT NOT NULL,
+        type TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        price REAL NOT NULL,
+        exchange_rate REAL,
+        fees REAL NOT NULL DEFAULT 0,
+        transaction_date TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      )
+    ''');
+    await db.execute('''CREATE INDEX IF NOT EXISTS idx_transactions_asset_date
+      ON transactions(asset_key, transaction_date)''');
+  }
+
+  Future<List<InvestmentAsset>> loadAssets(
+      {bool includeDeleted = false}) async {
     final db = await database;
-    final rows = await db.query('assets', orderBy: 'symbol COLLATE NOCASE');
+    final rows = await db.query(
+      'assets',
+      where: includeDeleted ? null : 'deleted_at IS NULL',
+      orderBy: 'symbol COLLATE NOCASE',
+    );
     return rows.map(InvestmentAsset.fromMap).toList();
   }
 
   Future<InvestmentAsset> saveAsset(InvestmentAsset asset) async {
     final db = await database;
-    final values = asset.toMap()..remove('id');
+    final now = DateTime.now().toUtc();
+    final normalized = asset.copyWith(
+      stableKey: asset.syncKey,
+      createdAt: asset.createdAt ?? now,
+      updatedAt: now,
+    );
+    final values = normalized.toMap()
+      ..remove('id')
+      ..['sync_status'] = 0;
     if (asset.id == null) {
       final id = await db.insert('assets', values);
-      return asset.copyWith(id: id);
+      return normalized.copyWith(id: id);
     }
     await db.update('assets', values, where: 'id = ?', whereArgs: [asset.id]);
-    return asset;
+    return normalized;
   }
 
   Future<void> saveQuote(int id, MarketQuote quote) async {
@@ -78,7 +192,6 @@ class DatabaseService {
       {
         'current_price': quote.current,
         'previous_close': quote.previousClose,
-        'updated_at': DateTime.now().toIso8601String(),
       },
       where: 'id = ?',
       whereArgs: [id],
@@ -87,35 +200,143 @@ class DatabaseService {
 
   Future<void> deleteAsset(int id) async {
     final db = await database;
-    await db.delete('assets', where: 'id = ?', whereArgs: [id]);
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.update(
+      'assets',
+      {'deleted_at': now, 'updated_at': now, 'sync_status': 0},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
-  Future<void> saveSnapshot(double total, double cost) async {
+  Future<void> upsertHistory(
+    InvestmentAsset asset,
+    List<PricePoint> points, {
+    required String source,
+    bool synced = false,
+  }) async {
+    if (points.isEmpty) return;
     final db = await database;
-    final now = DateTime.now();
-    final date = '${now.year.toString().padLeft(4, '0')}-'
-        '${now.month.toString().padLeft(2, '0')}-'
-        '${now.day.toString().padLeft(2, '0')}';
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final point in points) {
+        batch.rawInsert('''
+          INSERT INTO asset_price_history(
+            asset_key, price_date, close_price, currency, source,
+            created_at, updated_at, sync_status
+          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(asset_key, price_date) DO UPDATE SET
+            close_price = excluded.close_price,
+            currency = excluded.currency,
+            source = excluded.source,
+            updated_at = excluded.updated_at,
+            sync_status = excluded.sync_status
+          WHERE excluded.close_price != asset_price_history.close_price
+             OR excluded.currency != asset_price_history.currency
+             OR excluded.source != asset_price_history.source
+        ''', [
+          asset.syncKey,
+          dateKey(point.date),
+          point.value,
+          asset.currency.name,
+          source,
+          now,
+          now,
+          synced ? 1 : 0,
+        ]);
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<List<PricePoint>> loadAssetHistory(
+    String assetKey, {
+    DateTime? from,
+  }) async {
+    final db = await database;
+    final rows = await db.query(
+      'asset_price_history',
+      columns: ['price_date', 'close_price'],
+      where:
+          from == null ? 'asset_key = ?' : 'asset_key = ? AND price_date >= ?',
+      whereArgs: from == null ? [assetKey] : [assetKey, dateKey(from)],
+      orderBy: 'price_date',
+    );
+    return rows
+        .map((row) => PricePoint(
+              DateTime.parse(row['price_date'] as String),
+              (row['close_price'] as num).toDouble(),
+            ))
+        .toList();
+  }
+
+  Future<DateTime?> newestHistoryDate(String assetKey) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      'SELECT MAX(price_date) AS date FROM asset_price_history WHERE asset_key = ?',
+      [assetKey],
+    );
+    final value = rows.first['date'] as String?;
+    return value == null ? null : DateTime.parse(value);
+  }
+
+  Future<bool> historyFetchIsFresh(
+    String assetKey,
+    HistoryPeriod period, {
+    Duration maxAge = const Duration(hours: 6),
+  }) async {
+    final db = await database;
+    final rows = await db.query(
+      'history_fetch_state',
+      where: 'asset_key = ? AND period = ?',
+      whereArgs: [assetKey, period.name],
+      limit: 1,
+    );
+    if (rows.isEmpty) return false;
+    final fetched = DateTime.parse(rows.first['fetched_at'] as String);
+    return DateTime.now().toUtc().difference(fetched.toUtc()) < maxAge;
+  }
+
+  Future<void> markHistoryFetched(String assetKey, HistoryPeriod period) async {
+    final db = await database;
     await db.insert(
-      'portfolio_snapshots',
+      'history_fetch_state',
       {
-        'snapshot_date': date,
-        'total_brl': total,
-        'cost_brl': cost,
-        'created_at': now.toIso8601String(),
+        'asset_key': assetKey,
+        'period': period.name,
+        'fetched_at': DateTime.now().toUtc().toIso8601String(),
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
-  Future<List<PricePoint>> loadSnapshots() async {
+  Future<void> saveSnapshot(double total, double cost) async {
+    final db = await database;
+    final now = DateTime.now().toUtc();
+    final date = dateKey(now.toLocal());
+    await db.rawInsert('''
+      INSERT INTO portfolio_snapshots(
+        snapshot_date, total_brl, cost_brl, created_at, updated_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, 0)
+      ON CONFLICT(snapshot_date) DO UPDATE SET
+        total_brl = excluded.total_brl,
+        cost_brl = excluded.cost_brl,
+        updated_at = excluded.updated_at,
+        sync_status = 0
+    ''', [date, total, cost, now.toIso8601String(), now.toIso8601String()]);
+  }
+
+  Future<List<PricePoint>> loadSnapshots({DateTime? from}) async {
     final db = await database;
     final rows = await db.query(
       'portfolio_snapshots',
-      orderBy: 'snapshot_date DESC',
-      limit: 90,
+      columns: ['snapshot_date', 'total_brl'],
+      where: from == null ? null : 'snapshot_date >= ?',
+      whereArgs: from == null ? null : [dateKey(from)],
+      orderBy: 'snapshot_date',
     );
-    return rows.reversed
+    return rows
         .map((row) => PricePoint(
               DateTime.parse(row['snapshot_date'] as String),
               (row['total_brl'] as num).toDouble(),
@@ -129,7 +350,7 @@ class DatabaseService {
       for (final entry in {
         'usd_brl_current': quote.current.toString(),
         'usd_brl_previous': quote.previousClose.toString(),
-        'usd_brl_updated_at': DateTime.now().toIso8601String(),
+        'usd_brl_updated_at': DateTime.now().toUtc().toIso8601String(),
       }.entries) {
         await txn.insert(
           'app_state',
@@ -160,5 +381,112 @@ class DatabaseService {
       history: const [],
     );
   }
+
+  Future<List<Map<String, Object?>>> unsyncedRows(String table) async {
+    final db = await database;
+    return db.query(table, where: 'sync_status = 0');
+  }
+
+  Future<void> markRowsSynced(
+      String table, String where, List<Object?> args) async {
+    final db = await database;
+    await db.update(table, {'sync_status': 1}, where: where, whereArgs: args);
+  }
+
+  Future<String?> readSyncState(String key) async {
+    final db = await database;
+    final rows = await db.query(
+      'sync_state',
+      where: 'state_key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['state_value'] as String;
+  }
+
+  Future<void> writeSyncState(String key, String value) async {
+    final db = await database;
+    await db.insert(
+      'sync_state',
+      {'state_key': key, 'state_value': value},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> applyRemoteAsset(Map<String, Object?> row) async {
+    final db = await database;
+    await db.rawInsert('''
+      INSERT INTO assets(
+        stable_key, symbol, name, market, currency, quantity, average_price,
+        average_exchange_rate, created_at, updated_at, deleted_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT(stable_key) DO UPDATE SET
+        symbol = excluded.symbol, name = excluded.name, market = excluded.market,
+        currency = excluded.currency, quantity = excluded.quantity,
+        average_price = excluded.average_price,
+        average_exchange_rate = excluded.average_exchange_rate,
+        created_at = excluded.created_at, updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at, sync_status = 1
+      WHERE excluded.updated_at > assets.updated_at
+    ''', [
+      row['stable_key'],
+      row['symbol'],
+      row['name'],
+      row['market'],
+      row['currency'],
+      row['quantity'],
+      row['average_price'],
+      row['average_exchange_rate'],
+      row['created_at'],
+      row['updated_at'],
+      row['deleted_at'],
+    ]);
+  }
+
+  Future<void> applyRemoteHistory(Map<String, Object?> row) async {
+    final db = await database;
+    await db.rawInsert('''
+      INSERT INTO asset_price_history(
+        asset_key, price_date, close_price, currency, source,
+        created_at, updated_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT(asset_key, price_date) DO UPDATE SET
+        close_price = excluded.close_price, currency = excluded.currency,
+        source = excluded.source, updated_at = excluded.updated_at,
+        sync_status = 1
+      WHERE excluded.updated_at > asset_price_history.updated_at
+    ''', [
+      row['asset_key'],
+      row['price_date'],
+      row['close_price'],
+      row['currency'],
+      row['source'],
+      row['created_at'],
+      row['updated_at'],
+    ]);
+  }
+
+  Future<void> applyRemoteSnapshot(Map<String, Object?> row) async {
+    final db = await database;
+    await db.rawInsert('''
+      INSERT INTO portfolio_snapshots(
+        snapshot_date, total_brl, cost_brl, created_at, updated_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, 1)
+      ON CONFLICT(snapshot_date) DO UPDATE SET
+        total_brl = excluded.total_brl, cost_brl = excluded.cost_brl,
+        created_at = excluded.created_at, updated_at = excluded.updated_at,
+        sync_status = 1
+      WHERE excluded.updated_at > portfolio_snapshots.updated_at
+    ''', [
+      row['snapshot_date'],
+      row['total_brl'],
+      row['cost_brl'],
+      row['created_at'],
+      row['updated_at'],
+    ]);
+  }
 }
 
+String dateKey(DateTime date) => '${date.year.toString().padLeft(4, '0')}-'
+    '${date.month.toString().padLeft(2, '0')}-'
+    '${date.day.toString().padLeft(2, '0')}';

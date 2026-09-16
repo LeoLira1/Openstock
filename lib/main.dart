@@ -7,6 +7,8 @@ import 'package:intl/intl.dart';
 
 import 'controllers/portfolio_controller.dart';
 import 'models/investment_asset.dart';
+import 'screens/asset_detail_screen.dart';
+import 'screens/comparison_screen.dart';
 
 const _ink = Color(0xFF0B1220);
 const _surface = Color(0xFF121C2D);
@@ -118,7 +120,8 @@ class _PortfolioShellState extends State<PortfolioShell> {
                 _LogoMark(size: 36),
                 SizedBox(width: 11),
                 Text('OpenStock',
-                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 21)),
+                    style:
+                        TextStyle(fontWeight: FontWeight.w800, fontSize: 21)),
               ],
             ),
             actions: [
@@ -154,11 +157,12 @@ class _PortfolioShellState extends State<PortfolioShell> {
                     children: [
                       HomeDashboard(controller: controller),
                       AssetsScreen(controller: controller),
+                      ComparisonScreen(controller: controller),
                       SettingsScreen(controller: controller),
                     ],
                   ),
           ),
-          floatingActionButton: index == 2
+          floatingActionButton: index == 3
               ? null
               : FloatingActionButton.extended(
                   backgroundColor: _green,
@@ -182,6 +186,10 @@ class _PortfolioShellState extends State<PortfolioShell> {
                   icon: Icon(Icons.candlestick_chart_outlined),
                   selectedIcon: Icon(Icons.candlestick_chart_rounded),
                   label: 'Ativos'),
+              NavigationDestination(
+                  icon: Icon(Icons.compare_arrows_outlined),
+                  selectedIcon: Icon(Icons.compare_arrows_rounded),
+                  label: 'Comparar'),
               NavigationDestination(
                   icon: Icon(Icons.info_outline_rounded),
                   selectedIcon: Icon(Icons.info_rounded),
@@ -320,7 +328,8 @@ class HomeDashboard extends StatelessWidget {
           ..._sortedByDay(controller).take(5).map(
                 (asset) => Padding(
                   padding: const EdgeInsets.only(bottom: 9),
-                  child: _AssetSummaryTile(asset: asset, controller: controller),
+                  child:
+                      _AssetSummaryTile(asset: asset, controller: controller),
                 ),
               ),
         ],
@@ -341,7 +350,7 @@ class AssetsScreen extends StatelessWidget {
       children: [
         const _SectionTitle(
           title: 'Meus ativos',
-          subtitle: 'Toque em um ativo para editar',
+          subtitle: 'Toque em um ativo para ver detalhes e histórico',
         ),
         const SizedBox(height: 12),
         ...controller.assets.map((asset) => Padding(
@@ -349,7 +358,15 @@ class AssetsScreen extends StatelessWidget {
               child: Card(
                 clipBehavior: Clip.antiAlias,
                 child: InkWell(
-                  onTap: () => _editAsset(context, controller, asset),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => AssetDetailScreen(
+                        controller: controller,
+                        asset: asset,
+                        onEdit: () => _editAsset(context, controller, asset),
+                      ),
+                    ),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 8, 16),
                     child: Row(
@@ -419,7 +436,8 @@ class AssetsScreen extends StatelessWidget {
                             PopupMenuItem(value: 'edit', child: Text('Editar')),
                             PopupMenuItem(
                               value: 'delete',
-                              child: Text('Excluir', style: TextStyle(color: _red)),
+                              child: Text('Excluir',
+                                  style: TextStyle(color: _red)),
                             ),
                           ],
                         ),
@@ -456,7 +474,8 @@ class SettingsScreen extends StatelessWidget {
                   const SizedBox(width: 10),
                   const Expanded(
                     child: Text('Finnhub',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                        style: TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.w800)),
                   ),
                   _StatusChip(
                     active: controller.finnhubConfigured,
@@ -478,7 +497,9 @@ class SettingsScreen extends StatelessWidget {
                     child: OutlinedButton.icon(
                       onPressed: () => _configureFinnhub(context, controller),
                       icon: const Icon(Icons.settings_rounded),
-                      label: Text(controller.finnhubConfigured ? 'Trocar chave' : 'Configurar chave'),
+                      label: Text(controller.finnhubConfigured
+                          ? 'Trocar chave'
+                          : 'Configurar chave'),
                     ),
                   ),
                   if (controller.finnhubConfigured) ...[
@@ -497,7 +518,75 @@ class SettingsScreen extends StatelessWidget {
                     IconButton(
                       tooltip: 'Remover chave',
                       onPressed: () => _removeFinnhub(context, controller),
-                      icon: const Icon(Icons.delete_outline_rounded, color: _red),
+                      icon:
+                          const Icon(Icons.delete_outline_rounded, color: _red),
+                    ),
+                  ],
+                ]),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  const Icon(Icons.cloud_sync_outlined, color: _green),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text('Turso',
+                        style: TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.w800)),
+                  ),
+                  _StatusChip(
+                    active: controller.tursoConfigured,
+                    validated: controller.lastSync != null,
+                  ),
+                ]),
+                const SizedBox(height: 12),
+                const Text(
+                  'Sincroniza carteira, histórico e snapshots entre seus aparelhos. URL e token ficam no armazenamento seguro do Android.',
+                  style: TextStyle(color: _muted, height: 1.45),
+                ),
+                if (controller.syncMessage != null) ...[
+                  const SizedBox(height: 12),
+                  _Notice(text: controller.syncMessage!),
+                ],
+                const SizedBox(height: 15),
+                Row(children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: controller.syncing
+                          ? null
+                          : () => _configureTurso(context, controller),
+                      icon: const Icon(Icons.settings_rounded),
+                      label: Text(controller.tursoConfigured
+                          ? 'Trocar acesso'
+                          : 'Configurar Turso'),
+                    ),
+                  ),
+                  if (controller.tursoConfigured) ...[
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Sincronizar agora',
+                      onPressed: controller.syncing
+                          ? null
+                          : () => controller.synchronize(),
+                      icon: controller.syncing
+                          ? const SizedBox.square(
+                              dimension: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.sync_rounded),
+                    ),
+                    IconButton(
+                      tooltip: 'Desconectar Turso',
+                      onPressed: () => _removeTurso(context, controller),
+                      icon: const Icon(Icons.link_off_rounded, color: _red),
                     ),
                   ],
                 ]),
@@ -517,33 +606,41 @@ class SettingsScreen extends StatelessWidget {
                 Row(children: [
                   _LogoMark(size: 54),
                   SizedBox(width: 14),
-                  Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('OpenStock',
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
-                    Text('Versão 1.0.0', style: TextStyle(color: _muted)),
-                  ])
+                  Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('OpenStock',
+                            style: TextStyle(
+                                fontSize: 22, fontWeight: FontWeight.w800)),
+                        Text('Versão 1.1.0', style: TextStyle(color: _muted)),
+                      ])
                 ]),
                 SizedBox(height: 24),
                 _InfoLine(
                     icon: Icons.lock_outline_rounded,
-                    title: 'Privado por padrão',
-                    text: 'Sua carteira fica no banco SQLite deste aparelho.'),
+                    title: 'Offline primeiro',
+                    text:
+                        'O SQLite mantém o app ativo sem internet; o Turso é opcional e sincroniza quando a conexão volta.'),
                 _InfoLine(
                     icon: Icons.public_rounded,
                     title: 'Mercados',
-                    text: 'Finnhub para ativos internacionais, brapi.dev para B3 e consulta pública para histórico e câmbio.'),
+                    text:
+                        'Finnhub para ativos internacionais, brapi.dev para B3 e consulta pública para histórico e câmbio.'),
                 _InfoLine(
                     icon: Icons.schedule_rounded,
                     title: 'Atenção às cotações',
-                    text: 'Os dados podem ter atraso. Fora do pregão, será exibido o último preço disponível.'),
+                    text:
+                        'Os dados podem ter atraso. Fora do pregão, será exibido o último preço disponível.'),
                 _InfoLine(
                     icon: Icons.balance_rounded,
                     title: 'Uso informativo',
-                    text: 'O aplicativo não executa ordens nem oferece recomendação de investimento.'),
+                    text:
+                        'O aplicativo não executa ordens nem oferece recomendação de investimento.'),
                 _InfoLine(
                     icon: Icons.code_rounded,
                     title: 'Código aberto e créditos',
-                    text: 'Integração baseada no Open-Dev-Society/OpenStock. Licença AGPL-3.0; código-fonte em LeoLira1/Openstock.'),
+                    text:
+                        'Integração baseada no Open-Dev-Society/OpenStock. Licença AGPL-3.0; código-fonte em LeoLira1/Openstock.'),
               ],
             ),
           ),
@@ -598,10 +695,12 @@ class _EmptyPortfolio extends StatelessWidget {
               style: FilledButton.styleFrom(
                 backgroundColor: _green,
                 foregroundColor: _ink,
-                padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
               ),
               onPressed: () {
-                final shell = context.findAncestorStateOfType<_PortfolioShellState>();
+                final shell =
+                    context.findAncestorStateOfType<_PortfolioShellState>();
                 if (shell != null) _editAsset(context, shell.widget.controller);
               },
               icon: const Icon(Icons.add_rounded),
@@ -641,9 +740,10 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
     final asset = widget.asset;
     symbol = TextEditingController(text: asset?.symbol ?? '');
     name = TextEditingController(text: asset?.name ?? '');
-    quantity = TextEditingController(text: asset == null ? '' : _plain(asset.quantity));
-    averagePrice =
-        TextEditingController(text: asset == null ? '' : _plain(asset.averagePrice));
+    quantity = TextEditingController(
+        text: asset == null ? '' : _plain(asset.quantity));
+    averagePrice = TextEditingController(
+        text: asset == null ? '' : _plain(asset.averagePrice));
     averageFx = TextEditingController(
         text: asset == null || asset.currency == AssetCurrency.brl
             ? ''
@@ -696,7 +796,8 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
                 ),
                 const SizedBox(height: 20),
                 Text(widget.asset == null ? 'Adicionar ativo' : 'Editar ativo',
-                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+                    style: const TextStyle(
+                        fontSize: 24, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 6),
                 const Text('Use o código de negociação, como PRIO3 ou VOO.',
                     style: TextStyle(color: _muted)),
@@ -705,7 +806,8 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
                   segments: const [
                     ButtonSegment(value: AssetMarket.b3, label: Text('B3')),
                     ButtonSegment(value: AssetMarket.usa, label: Text('EUA')),
-                    ButtonSegment(value: AssetMarket.manual, label: Text('Manual')),
+                    ButtonSegment(
+                        value: AssetMarket.manual, label: Text('Manual')),
                   ],
                   selected: {market},
                   onSelectionChanged: (value) => setState(() {
@@ -720,8 +822,10 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
                     initialValue: currency,
                     decoration: const InputDecoration(labelText: 'Moeda'),
                     items: const [
-                      DropdownMenuItem(value: AssetCurrency.brl, child: Text('Real (BRL)')),
-                      DropdownMenuItem(value: AssetCurrency.usd, child: Text('Dólar (USD)')),
+                      DropdownMenuItem(
+                          value: AssetCurrency.brl, child: Text('Real (BRL)')),
+                      DropdownMenuItem(
+                          value: AssetCurrency.usd, child: Text('Dólar (USD)')),
                     ],
                     onChanged: (value) => setState(() => currency = value!),
                   ),
@@ -751,7 +855,9 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
                 ),
                 const SizedBox(height: 14),
                 Row(children: [
-                  Expanded(child: _NumberField(controller: quantity, label: 'Quantidade')),
+                  Expanded(
+                      child: _NumberField(
+                          controller: quantity, label: 'Quantidade')),
                   const SizedBox(width: 12),
                   Expanded(
                     child: _NumberField(
@@ -803,10 +909,18 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
     if (!formKey.currentState!.validate()) return;
     final qty = _parseNumber(quantity.text);
     final avg = _parseNumber(averagePrice.text);
-    final fx = currency == AssetCurrency.usd ? _parseNumber(averageFx.text) : 1.0;
-    final current = market == AssetMarket.manual ? _parseNumber(currentPrice.text) : null;
-    if (qty == null || qty <= 0 || avg == null || avg <= 0 || fx == null || fx <= 0) {
-      _showError('Preencha quantidade, preço médio e câmbio com valores maiores que zero.');
+    final fx =
+        currency == AssetCurrency.usd ? _parseNumber(averageFx.text) : 1.0;
+    final current =
+        market == AssetMarket.manual ? _parseNumber(currentPrice.text) : null;
+    if (qty == null ||
+        qty <= 0 ||
+        avg == null ||
+        avg <= 0 ||
+        fx == null ||
+        fx <= 0) {
+      _showError(
+          'Preencha quantidade, preço médio e câmbio com valores maiores que zero.');
       return;
     }
     if (market == AssetMarket.manual && (current == null || current <= 0)) {
@@ -843,7 +957,8 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
 }
 
 class _NumberField extends StatelessWidget {
-  const _NumberField({required this.controller, required this.label, this.helper});
+  const _NumberField(
+      {required this.controller, required this.label, this.helper});
   final TextEditingController controller;
   final String label;
   final String? helper;
@@ -855,13 +970,15 @@ class _NumberField extends StatelessWidget {
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
       inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))],
       decoration: InputDecoration(labelText: label, helperText: helper),
-      validator: (value) => _parseNumber(value ?? '') == null ? 'Valor inválido' : null,
+      validator: (value) =>
+          _parseNumber(value ?? '') == null ? 'Valor inválido' : null,
     );
   }
 }
 
 class PortfolioLineChart extends StatelessWidget {
-  const PortfolioLineChart({super.key, required this.points, required this.positive});
+  const PortfolioLineChart(
+      {super.key, required this.points, required this.positive});
   final List<PricePoint> points;
   final bool positive;
 
@@ -885,7 +1002,9 @@ class _LineChartPainter extends CustomPainter {
     final path = Path();
     for (var i = 0; i < points.length; i++) {
       final x = i / (points.length - 1) * size.width;
-      final y = size.height - ((points[i].value - minValue) / range * (size.height - 10)) - 5;
+      final y = size.height -
+          ((points[i].value - minValue) / range * (size.height - 10)) -
+          5;
       if (i == 0) {
         path.moveTo(x, y);
       } else {
@@ -980,9 +1099,14 @@ class _MetricCard extends StatelessWidget {
           const SizedBox(height: 8),
           FittedBox(
               child: Text(value,
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: color))),
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: color))),
           const SizedBox(height: 5),
-          Text(detail, style: TextStyle(color: color.withValues(alpha: .8), fontSize: 12)),
+          Text(detail,
+              style:
+                  TextStyle(color: color.withValues(alpha: .8), fontSize: 12)),
         ]),
       ),
     );
@@ -990,7 +1114,8 @@ class _MetricCard extends StatelessWidget {
 }
 
 class _AllocationRow extends StatelessWidget {
-  const _AllocationRow({required this.symbol, required this.value, required this.ratio});
+  const _AllocationRow(
+      {required this.symbol, required this.value, required this.ratio});
   final String symbol;
   final double value;
   final double ratio;
@@ -1000,10 +1125,16 @@ class _AllocationRow extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 14),
       child: Column(children: [
         Row(children: [
-          Expanded(child: Text(symbol, style: const TextStyle(fontWeight: FontWeight.w700))),
+          Expanded(
+              child: Text(symbol,
+                  style: const TextStyle(fontWeight: FontWeight.w700))),
           Text(_money(value), style: const TextStyle(fontSize: 12)),
           const SizedBox(width: 8),
-          SizedBox(width: 46, child: Text('${(ratio * 100).toStringAsFixed(1)}%', textAlign: TextAlign.end, style: const TextStyle(color: _muted, fontSize: 12))),
+          SizedBox(
+              width: 46,
+              child: Text('${(ratio * 100).toStringAsFixed(1)}%',
+                  textAlign: TextAlign.end,
+                  style: const TextStyle(color: _muted, fontSize: 12))),
         ]),
         const SizedBox(height: 7),
         LinearProgressIndicator(
@@ -1029,12 +1160,22 @@ class _AssetSummaryTile extends StatelessWidget {
     return Card(
       child: ListTile(
         leading: _TickerBadge(asset: asset),
-        title: Text(asset.symbol, style: const TextStyle(fontWeight: FontWeight.w800)),
-        subtitle: Text(asset.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-        trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Text(_signedMoney(value), style: TextStyle(color: positive ? _green : _red, fontWeight: FontWeight.w700)),
-          Text(_signedPercent(controller.assetDayPercent(asset)), style: TextStyle(color: positive ? _green : _red, fontSize: 12)),
-        ]),
+        title: Text(asset.symbol,
+            style: const TextStyle(fontWeight: FontWeight.w800)),
+        subtitle:
+            Text(asset.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(_signedMoney(value),
+                  style: TextStyle(
+                      color: positive ? _green : _red,
+                      fontWeight: FontWeight.w700)),
+              Text(_signedPercent(controller.assetDayPercent(asset)),
+                  style:
+                      TextStyle(color: positive ? _green : _red, fontSize: 12)),
+            ]),
       ),
     );
   }
@@ -1058,7 +1199,8 @@ class _TickerBadge extends StatelessWidget {
         color: _green.withValues(alpha: .12),
         borderRadius: BorderRadius.circular(13),
       ),
-      child: Text(label, style: const TextStyle(color: _green, fontWeight: FontWeight.w800)),
+      child: Text(label,
+          style: const TextStyle(color: _green, fontWeight: FontWeight.w800)),
     );
   }
 }
@@ -1073,7 +1215,10 @@ class _ChartPlaceholder extends StatelessWidget {
         ),
         alignment: Alignment.center,
         padding: const EdgeInsets.all(22),
-        child: const Text('O gráfico ganhará forma com o histórico das cotações.', textAlign: TextAlign.center, style: TextStyle(color: _muted)),
+        child: const Text(
+            'O gráfico ganhará forma com o histórico das cotações.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: _muted)),
       );
 }
 
@@ -1101,14 +1246,20 @@ class _SectionTitle extends StatelessWidget {
   final String title;
   final String? subtitle;
   @override
-  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(title, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
-        if (subtitle != null) ...[const SizedBox(height: 3), Text(subtitle!, style: const TextStyle(color: _muted, fontSize: 12))],
+  Widget build(BuildContext context) =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title,
+            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
+        if (subtitle != null) ...[
+          const SizedBox(height: 3),
+          Text(subtitle!, style: const TextStyle(color: _muted, fontSize: 12))
+        ],
       ]);
 }
 
 class _InfoLine extends StatelessWidget {
-  const _InfoLine({required this.icon, required this.title, required this.text});
+  const _InfoLine(
+      {required this.icon, required this.title, required this.text});
   final IconData icon;
   final String title;
   final String text;
@@ -1118,11 +1269,15 @@ class _InfoLine extends StatelessWidget {
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Icon(icon, color: _green, size: 22),
           const SizedBox(width: 13),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 4),
-            Text(text, style: const TextStyle(color: _muted, height: 1.4)),
-          ])),
+          Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(title,
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                Text(text, style: const TextStyle(color: _muted, height: 1.4)),
+              ])),
         ]),
       );
 }
@@ -1138,15 +1293,17 @@ Future<void> _editAsset(BuildContext context, PortfolioController controller,
   );
 }
 
-Future<void> _confirmDelete(BuildContext context, PortfolioController controller,
-    InvestmentAsset asset) async {
+Future<void> _confirmDelete(BuildContext context,
+    PortfolioController controller, InvestmentAsset asset) async {
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
       title: Text('Excluir ${asset.symbol}?'),
       content: const Text('O ativo será removido da carteira deste aparelho.'),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+        TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar')),
         FilledButton(
           style: FilledButton.styleFrom(backgroundColor: _red),
           onPressed: () => Navigator.pop(context, true),
@@ -1251,36 +1408,371 @@ Future<void> _removeFinnhub(
   if (confirmed == true) await controller.saveFinnhubKey('');
 }
 
-List<InvestmentAsset> _sortedByValue(PortfolioController controller) =>
-    [...controller.assets]
-      ..sort((a, b) => controller.currentValue(b).compareTo(controller.currentValue(a)));
+Future<void> _configureTurso(
+    BuildContext context, PortfolioController controller) async {
+  final url = TextEditingController();
+  final token = TextEditingController();
+  var saving = false;
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: const Text('Conectar ao Turso'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignmen}v�-�G����ƭy�não depende de transações.
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS transactions(
+        id TEXT PRIMARY KEY,
+        asset_key TEXT NOT NULL,
+        type TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        price REAL NOT NULL,
+        exchange_rate REAL,
+        fees REAL NOT NULL DEFAULT 0,
+        transaction_date TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      )
+    ''');
+    await db.execute('''CREATE INDEX IF NOT EXISTS idx_transactions_asset_date
+      ON transactions(asset_key, transaction_date)''');
+  }
 
-List<InvestmentAsset> _sortedByDay(PortfolioController controller) =>
-    [...controller.assets]
-      ..sort((a, b) => controller.assetDayResult(b).abs().compareTo(controller.assetDayResult(a).abs()));
+  Future<List<InvestmentAsset>> loadAssets(
+      {bool includeDeleted = false}) async {
+    final db = await database;
+    final rows = await db.query(
+      'assets',
+      where: includeDeleted ? null : 'deleted_at IS NULL',
+      orderBy: 'symbol COLLATE NOCASE',
+    );
+    return rows.map(InvestmentAsset.fromMap).toList();
+  }
 
-final _brl = NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$', decimalDigits: 2);
-final _usd = NumberFormat.currency(locale: 'pt_BR', symbol: 'US\$', decimalDigits: 2);
+  Future<InvestmentAsset> saveAsset(InvestmentAsset asset) async {
+    final db = await database;
+    final now = DateTime.now().toUtc();
+    final normalized = asset.copyWith(
+      stableKey: asset.syncKey,
+      createdAt: asset.createdAt ?? now,
+      updatedAt: now,
+    );
+    final values = normalized.toMap()
+      ..remove('id')
+      ..['sync_status'] = 0;
+    if (asset.id == null) {
+      final id = await db.insert('assets', values);
+      return normalized.copyWith(id: id);
+    }
+    await db.update('assets', values, where: 'id = ?', whereArgs: [asset.id]);
+    return normalized;
+  }
 
-String _money(double value, {String? symbol}) => symbol == null
-    ? _brl.format(value)
-    : NumberFormat.currency(locale: 'pt_BR', symbol: symbol, decimalDigits: 2).format(value);
-String _assetMoney(double value, AssetCurrency currency) =>
-    (currency == AssetCurrency.brl ? _brl : _usd).format(value);
-String _signedMoney(double value) => '${value >= 0 ? '+' : '-'}${_brl.format(value.abs())}';
-String _signedPercent(double value) => '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2).replaceAll('.', ',')}%';
-String _quantity(double value) => NumberFormat.decimalPattern('pt_BR').format(value);
-String _plain(double value) => value.toString().replaceAll('.', ',');
-String _marketName(AssetMarket market) => switch (market) {
-      AssetMarket.b3 => 'B3',
-      AssetMarket.usa => 'EUA',
-      AssetMarket.manual => 'Manual',
+  Future<void> saveQuote(int id, MarketQuote quote) async {
+    final db = await database;
+    await db.update(
+      'assets',
+      {
+        'current_price': quote.current,
+        'previous_close': quote.previousClose,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteAsset(int id) async {
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.update(
+      'assets',
+      {'deleted_at': now, 'updated_at': now, 'sync_status': 0},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> upsertHistory(
+    InvestmentAsset asset,
+    List<PricePoint> points, {
+    required String source,
+    bool synced = false,
+  }) async {
+    if (points.isEmpty) return;
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final point in points) {
+        batch.rawInsert('''
+          INSERT INTO asset_price_history(
+            asset_key, price_date, close_price, currency, source,
+            created_at, updated_at, sync_status
+          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(asset_key, price_date) DO UPDATE SET
+            close_price = excluded.close_price,
+            currency = excluded.currency,
+            source = excluded.source,
+            updated_at = excluded.updated_at,
+            sync_status = excluded.sync_status
+          WHERE excluded.close_price != asset_price_history.close_price
+             OR excluded.currency != asset_price_history.currency
+             OR excluded.source != asset_price_history.source
+        ''', [
+          asset.syncKey,
+          dateKey(point.date),
+          point.value,
+          asset.currency.name,
+          source,
+          now,
+          now,
+          synced ? 1 : 0,
+        ]);
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<List<PricePoint>> loadAssetHistory(
+    String assetKey, {
+    DateTime? from,
+  }) async {
+    final db = await database;
+    final rows = await db.query(
+      'asset_price_history',
+      columns: ['price_date', 'close_price'],
+      where:
+          from == null ? 'asset_key = ?' : 'asset_key = ? AND price_date >= ?',
+      whereArgs: from == null ? [assetKey] : [assetKey, dateKey(from)],
+      orderBy: 'price_date',
+    );
+    return rows
+        .map((row) => PricePoint(
+              DateTime.parse(row['price_date'] as String),
+              (row['close_price'] as num).toDouble(),
+            ))
+        .toList();
+  }
+
+  Future<DateTime?> newestHistoryDate(String assetKey) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      'SELECT MAX(price_date) AS date FROM asset_price_history WHERE asset_key = ?',
+      [assetKey],
+    );
+    final value = rows.first['date'] as String?;
+    return value == null ? null : DateTime.parse(value);
+  }
+
+  Future<bool> historyFetchIsFresh(
+    String assetKey,
+    HistoryPeriod period, {
+    Duration maxAge = const Duration(hours: 6),
+  }) async {
+    final db = await database;
+    final rows = await db.query(
+      'history_fetch_state',
+      where: 'asset_key = ? AND period = ?',
+      whereArgs: [assetKey, period.name],
+      limit: 1,
+    );
+    if (rows.isEmpty) return false;
+    final fetched = DateTime.parse(rows.first['fetched_at'] as String);
+    return DateTime.now().toUtc().difference(fetched.toUtc()) < maxAge;
+  }
+
+  Future<void> markHistoryFetched(String assetKey, HistoryPeriod period) async {
+    final db = await database;
+    await db.insert(
+      'history_fetch_state',
+      {
+        'asset_key': assetKey,
+        'period': period.name,
+        'fetched_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> saveSnapshot(double total, double cost) async {
+    final db = await database;
+    final now = DateTime.now().toUtc();
+    final date = dateKey(now.toLocal());
+    await db.rawInsert('''
+      INSERT INTO portfolio_snapshots(
+        snapshot_date, total_brl, cost_brl, created_at, updated_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, 0)
+      ON CONFLICT(snapshot_date) DO UPDATE SET
+        total_brl = excluded.total_brl,
+        cost_brl = excluded.cost_brl,
+        updated_at = excluded.updated_at,
+        sync_status = 0
+    ''', [date, total, cost, now.toIso8601String(), now.toIso8601String()]);
+  }
+
+  Future<List<PricePoint>> loadSnapshots({DateTime? from}) async {
+    final db = await database;
+    final rows = await db.query(
+      'portfolio_snapshots',
+      columns: ['snapshot_date', 'total_brl'],
+      where: from == null ? null : 'snapshot_date >= ?',
+      whereArgs: from == null ? null : [dateKey(from)],
+      orderBy: 'snapshot_date',
+    );
+    return rows
+        .map((row) => PricePoint(
+              DateTime.parse(row['snapshot_date'] as String),
+              (row['total_brl'] as num).toDouble(),
+            ))
+        .toList();
+  }
+
+  Future<void> saveDollarQuote(MarketQuote quote) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      for (final entry in {
+        'usd_brl_current': quote.current.toString(),
+        'usd_brl_previous': quote.previousClose.toString(),
+        'usd_brl_updated_at': DateTime.now().toUtc().toIso8601String(),
+      }.entries) {
+        await txn.insert(
+          'app_state',
+          {'state_key': entry.key, 'state_value': entry.value},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+  }
+
+  Future<MarketQuote?> loadDollarQuote() async {
+    final db = await database;
+    final rows = await db.query(
+      'app_state',
+      where: 'state_key IN (?, ?)',
+      whereArgs: ['usd_brl_current', 'usd_brl_previous'],
+    );
+    final values = <String, String>{
+      for (final row in rows)
+        row['state_key'] as String: row['state_value'] as String,
     };
+    final current = double.tryParse(values['usd_brl_current'] ?? '');
+    final previous = double.tryParse(values['usd_brl_previous'] ?? '');
+    if (current == null) return null;
+    return MarketQuote(
+      current: current,
+      previousClose: previous ?? current,
+      history: const [],
+    );
+  }
 
-double? _parseNumber(String text) {
-  final clean = text.trim();
-  if (clean.isEmpty) return null;
-  return double.tryParse(clean.contains(',')
-      ? clean.replaceAll('.', '').replaceAll(',', '.')
-      : clean);
+  Future<List<Map<String, Object?>>> unsyncedRows(String table) async {
+    final db = await database;
+    return db.query(table, where: 'sync_status = 0');
+  }
+
+  Future<void> markRowsSynced(
+      String table, String where, List<Object?> args) async {
+    final db = await database;
+    await db.update(table, {'sync_status': 1}, where: where, whereArgs: args);
+  }
+
+  Future<String?> readSyncState(String key) async {
+    final db = await database;
+    final rows = await db.query(
+      'sync_state',
+      where: 'state_key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['state_value'] as String;
+  }
+
+  Future<void> writeSyncState(String key, String value) async {
+    final db = await database;
+    await db.insert(
+      'sync_state',
+      {'state_key': key, 'state_value': value},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> applyRemoteAsset(Map<String, Object?> row) async {
+    final db = await database;
+    await db.rawInsert('''
+      INSERT INTO assets(
+        stable_key, symbol, name, market, currency, quantity, average_price,
+        average_exchange_rate, created_at, updated_at, deleted_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT(stable_key) DO UPDATE SET
+        symbol = excluded.symbol, name = excluded.name, market = excluded.market,
+        currency = excluded.currency, quantity = excluded.quantity,
+        average_price = excluded.average_price,
+        average_exchange_rate = excluded.average_exchange_rate,
+        created_at = excluded.created_at, updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at, sync_status = 1
+      WHERE excluded.updated_at > assets.updated_at
+    ''', [
+      row['stable_key'],
+      row['symbol'],
+      row['name'],
+      row['market'],
+      row['currency'],
+      row['quantity'],
+      row['average_price'],
+      row['average_exchange_rate'],
+      row['created_at'],
+      row['updated_at'],
+      row['deleted_at'],
+    ]);
+  }
+
+  Future<void> applyRemoteHistory(Map<String, Object?> row) async {
+    final db = await database;
+    await db.rawInsert('''
+      INSERT INTO asset_price_history(
+        asset_key, price_date, close_price, currency, source,
+        created_at, updated_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT(asset_key, price_date) DO UPDATE SET
+        close_price = excluded.close_price, currency = excluded.currency,
+        source = excluded.source, updated_at = excluded.updated_at,
+        sync_status = 1
+      WHERE excluded.updated_at > asset_price_history.updated_at
+    ''', [
+      row['asset_key'],
+      row['price_date'],
+      row['close_price'],
+      row['currency'],
+      row['source'],
+      row['created_at'],
+      row['updated_at'],
+    ]);
+  }
+
+  Future<void> applyRemoteSnapshot(Map<String, Object?> row) async {
+    final db = await database;
+    await db.rawInsert('''
+      INSERT INTO portfolio_snapshots(
+        snapshot_date, total_brl, cost_brl, created_at, updated_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, 1)
+      ON CONFLICT(snapshot_date) DO UPDATE SET
+        total_brl = excluded.total_brl, cost_brl = excluded.cost_brl,
+        created_at = excluded.created_at, updated_at = excluded.updated_at,
+        sync_status = 1
+      WHERE excluded.updated_at > portfolio_snapshots.updated_at
+    ''', [
+      row['snapshot_date'],
+      row['total_brl'],
+      row['cost_brl'],
+      row['created_at'],
+      row['updated_at'],
+    ]);
+  }
 }
+
+String dateKey(DateTime date) => '${date.year.toString().padLeft(4, '0')}-'
+    '${date.month.toString().padLeft(2, '0')}-'
+    '${date.day.toString().padLeft(2, '0')}';
