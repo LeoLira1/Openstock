@@ -1,4 +1,5 @@
 import 'history_models.dart';
+import 'investment_asset.dart';
 import 'investment_transaction.dart';
 
 class AssetTrackingSummary {
