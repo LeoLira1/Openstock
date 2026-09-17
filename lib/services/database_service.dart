@@ -3,8 +3,9 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
+import '../models/investment_transaction.dart';
 
-const databaseVersion = 5;
+const databaseVersion = 6;
 
 /// Colunas que a renda fixa acrescenta em `assets`, locais e no Turso.
 const fixedIncomeColumns = <String, String>{
@@ -96,6 +97,16 @@ class DatabaseService {
         await _addColumnIfMissing(db, 'assets', column.key, column.value);
       }
     }
+    if (oldVersion < 6) {
+      // Em versões antigas a tabela ainda pode não existir. A criação é
+      // idempotente e acontece antes dos ALTER TABLE não destrutivos.
+      await _createSupportingSchema(db);
+      await _addColumnIfMissing(
+          db, 'transactions', 'cash_value', 'REAL NOT NULL DEFAULT 0');
+      await _addColumnIfMissing(db, 'transactions', 'notes', 'TEXT');
+      await _addColumnIfMissing(
+          db, 'transactions', 'sync_status', 'INTEGER NOT NULL DEFAULT 0');
+    }
     await _createSupportingSchema(db);
   }
 
@@ -161,7 +172,6 @@ class DatabaseService {
     ''');
     await db.execute('''CREATE TABLE IF NOT EXISTS sync_state(
       state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL)''');
-    // Preparação estrutural; o cálculo atual não depende de transações.
     await db.execute('''
       CREATE TABLE IF NOT EXISTS transactions(
         id TEXT PRIMARY KEY,
@@ -171,14 +181,35 @@ class DatabaseService {
         price REAL NOT NULL,
         exchange_rate REAL,
         fees REAL NOT NULL DEFAULT 0,
+        cash_value REAL NOT NULL DEFAULT 0,
         transaction_date TEXT NOT NULL,
+        notes TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        deleted_at TEXT
+        deleted_at TEXT,
+        sync_status INTEGER NOT NULL DEFAULT 0
       )
     ''');
     await db.execute('''CREATE INDEX IF NOT EXISTS idx_transactions_asset_date
       ON transactions(asset_key, transaction_date)''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS asset_daily_snapshots(
+        asset_key TEXT NOT NULL,
+        snapshot_date TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        average_price REAL NOT NULL,
+        exchange_rate REAL NOT NULL,
+        current_price REAL NOT NULL,
+        value_brl REAL NOT NULL,
+        cost_brl REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(asset_key, snapshot_date)
+      )
+    ''');
+    await db.execute('''CREATE INDEX IF NOT EXISTS idx_asset_snapshots_date
+      ON asset_daily_snapshots(snapshot_date)''');
   }
 
   Future<List<InvestmentAsset>> loadAssets(
@@ -233,6 +264,165 @@ class DatabaseService {
       where: 'id = ?',
       whereArgs: [id],
     );
+  }
+
+  Future<List<InvestmentTransaction>> loadTransactions({
+    String? assetKey,
+    bool includeDeleted = false,
+  }) async {
+    final db = await database;
+    final conditions = <String>[
+      if (assetKey != null) 'asset_key = ?',
+      if (!includeDeleted) 'deleted_at IS NULL',
+    ];
+    final rows = await db.query(
+      'transactions',
+      where: conditions.isEmpty ? null : conditions.join(' AND '),
+      whereArgs: assetKey == null ? null : [assetKey],
+      orderBy: 'transaction_date DESC, created_at DESC',
+    );
+    return rows.map(InvestmentTransaction.fromMap).toList();
+  }
+
+  Future<void> ensureOpeningTransactions(
+    Iterable<InvestmentAsset> assets, {
+    DateTime? trackingDate,
+  }) async {
+    final db = await database;
+    final now = DateTime.now().toUtc();
+    final day = dateKey(trackingDate ?? now.toLocal());
+    await db.transaction((txn) async {
+      for (final asset in assets) {
+        final existing = await txn.rawQuery(
+          'SELECT 1 FROM transactions '
+          'WHERE asset_key = ? AND deleted_at IS NULL LIMIT 1',
+          [asset.syncKey],
+        );
+        if (existing.isNotEmpty) continue;
+        final opening = InvestmentTransaction(
+          id: 'opening:${asset.syncKey}:$day',
+          assetKey: asset.syncKey,
+          type: InvestmentTransactionType.openingPosition,
+          quantity: asset.quantity,
+          unitPrice: asset.averagePrice,
+          exchangeRate: asset.averageExchangeRate,
+          transactionDate: DateTime.parse(day),
+          createdAt: now,
+          updatedAt: now,
+          notes: 'Posição existente no início do rastreamento',
+        ).toMap()
+          ..['sync_status'] = 0;
+        await txn.insert(
+          'transactions',
+          opening,
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    });
+  }
+
+  Future<void> saveTransaction(InvestmentTransaction transaction) async {
+    final db = await database;
+    final values = transaction.toMap()..['sync_status'] = 0;
+    await db.insert(
+      'transactions',
+      values,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> updateOpeningTransaction(InvestmentAsset asset) async {
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.update(
+      'transactions',
+      {
+        'quantity': asset.quantity,
+        'price': asset.averagePrice,
+        'exchange_rate': asset.averageExchangeRate,
+        'updated_at': now,
+        'sync_status': 0,
+      },
+      where: 'asset_key = ? AND type = ? AND deleted_at IS NULL',
+      whereArgs: [
+        asset.syncKey,
+        InvestmentTransactionType.openingPosition.name,
+      ],
+    );
+  }
+
+  Future<void> deleteTransaction(String id) async {
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.update(
+      'transactions',
+      {'deleted_at': now, 'updated_at': now, 'sync_status': 0},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> saveAssetDailySnapshot(
+    InvestmentAsset asset, {
+    required double exchangeRate,
+    required double valueBrl,
+    required double costBrl,
+  }) async {
+    final db = await database;
+    final now = DateTime.now().toUtc();
+    final day = dateKey(now.toLocal());
+    final price = asset.currentPrice ?? asset.averagePrice;
+    await db.rawInsert('''
+      INSERT INTO asset_daily_snapshots(
+        asset_key, snapshot_date, quantity, average_price, exchange_rate,
+        current_price, value_brl, cost_brl, created_at, updated_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      ON CONFLICT(asset_key, snapshot_date) DO UPDATE SET
+        quantity = excluded.quantity,
+        average_price = excluded.average_price,
+        exchange_rate = excluded.exchange_rate,
+        current_price = excluded.current_price,
+        value_brl = excluded.value_brl,
+        cost_brl = excluded.cost_brl,
+        updated_at = excluded.updated_at,
+        sync_status = 0
+    ''', [
+      asset.syncKey,
+      day,
+      asset.quantity,
+      asset.averagePrice,
+      exchangeRate,
+      price,
+      valueBrl,
+      costBrl,
+      now.toIso8601String(),
+      now.toIso8601String(),
+    ]);
+  }
+
+  Future<List<AssetDailySnapshot>> loadAssetDailySnapshots(
+    String assetKey,
+  ) async {
+    final db = await database;
+    final rows = await db.query(
+      'asset_daily_snapshots',
+      where: 'asset_key = ?',
+      whereArgs: [assetKey],
+      orderBy: 'snapshot_date',
+    );
+    return rows
+        .map((row) => AssetDailySnapshot(
+              assetKey: row['asset_key'] as String,
+              date: DateTime.parse(row['snapshot_date'] as String),
+              quantity: (row['quantity'] as num).toDouble(),
+              averagePrice: (row['average_price'] as num).toDouble(),
+              exchangeRate: (row['exchange_rate'] as num).toDouble(),
+              currentPrice: (row['current_price'] as num).toDouble(),
+              valueBrl: (row['value_brl'] as num).toDouble(),
+              costBrl: (row['cost_brl'] as num).toDouble(),
+              updatedAt: DateTime.parse(row['updated_at'] as String),
+            ))
+        .toList();
   }
 
   Future<void> upsertHistory(
@@ -587,6 +777,67 @@ class DatabaseService {
     ''', [
       row['snapshot_date'],
       row['total_brl'],
+      row['cost_brl'],
+      row['created_at'],
+      row['updated_at'],
+    ]);
+  }
+
+  Future<void> applyRemoteTransaction(Map<String, Object?> row) async {
+    final db = await database;
+    await db.rawInsert('''
+      INSERT INTO transactions(
+        id, asset_key, type, quantity, price, exchange_rate, fees, cash_value,
+        transaction_date, notes, created_at, updated_at, deleted_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT(id) DO UPDATE SET
+        asset_key = excluded.asset_key, type = excluded.type,
+        quantity = excluded.quantity, price = excluded.price,
+        exchange_rate = excluded.exchange_rate, fees = excluded.fees,
+        cash_value = excluded.cash_value,
+        transaction_date = excluded.transaction_date, notes = excluded.notes,
+        updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
+        sync_status = 1
+      WHERE excluded.updated_at > transactions.updated_at
+    ''', [
+      row['id'],
+      row['asset_key'],
+      row['type'],
+      row['quantity'],
+      row['price'],
+      row['exchange_rate'],
+      row['fees'],
+      row['cash_value'],
+      row['transaction_date'],
+      row['notes'],
+      row['created_at'],
+      row['updated_at'],
+      row['deleted_at'],
+    ]);
+  }
+
+  Future<void> applyRemoteAssetDailySnapshot(Map<String, Object?> row) async {
+    final db = await database;
+    await db.rawInsert('''
+      INSERT INTO asset_daily_snapshots(
+        asset_key, snapshot_date, quantity, average_price, exchange_rate,
+        current_price, value_brl, cost_brl, created_at, updated_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT(asset_key, snapshot_date) DO UPDATE SET
+        quantity = excluded.quantity, average_price = excluded.average_price,
+        exchange_rate = excluded.exchange_rate,
+        current_price = excluded.current_price, value_brl = excluded.value_brl,
+        cost_brl = excluded.cost_brl, updated_at = excluded.updated_at,
+        sync_status = 1
+      WHERE excluded.updated_at > asset_daily_snapshots.updated_at
+    ''', [
+      row['asset_key'],
+      row['snapshot_date'],
+      row['quantity'],
+      row['average_price'],
+      row['exchange_rate'],
+      row['current_price'],
+      row['value_brl'],
       row['cost_brl'],
       row['created_at'],
       row['updated_at'],

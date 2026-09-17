@@ -624,7 +624,7 @@ class SettingsScreen extends StatelessWidget {
                         Text('OpenStock',
                             style: TextStyle(
                                 fontSize: 22, fontWeight: FontWeight.w800)),
-                        Text('Versão 1.1.0', style: TextStyle(color: _muted)),
+                        Text('Versão 1.3.0', style: TextStyle(color: _muted)),
                       ])
                 ]),
                 SizedBox(height: 24),

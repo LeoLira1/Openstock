@@ -68,6 +68,30 @@ class PortfolioSnapshot {
   PricePoint toPoint() => PricePoint(date, totalBrl);
 }
 
+class AssetDailySnapshot {
+  const AssetDailySnapshot({
+    required this.assetKey,
+    required this.date,
+    required this.quantity,
+    required this.averagePrice,
+    required this.exchangeRate,
+    required this.currentPrice,
+    required this.valueBrl,
+    required this.costBrl,
+    required this.updatedAt,
+  });
+
+  final String assetKey;
+  final DateTime date;
+  final double quantity;
+  final double averagePrice;
+  final double exchangeRate;
+  final double currentPrice;
+  final double valueBrl;
+  final double costBrl;
+  final DateTime updatedAt;
+}
+
 List<PricePoint> normalizePerformance(List<PricePoint> points) {
   if (points.isEmpty || points.first.value == 0) return const [];
   final initial = points.first.value;

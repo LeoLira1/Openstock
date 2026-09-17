@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../models/fixed_income.dart';
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
+import '../models/investment_transaction.dart';
 import '../services/cdi_service.dart';
 import '../services/database_service.dart';
 import '../services/quote_service.dart';
@@ -37,6 +38,7 @@ class PortfolioController extends ChangeNotifier {
   bool cdiLoading = false;
   String? cdiError;
   final Map<String, List<PricePoint>> assetHistories = {};
+  final Map<String, List<InvestmentTransaction>> transactionsByAsset = {};
   final Set<String> historyLoading = {};
   final Map<String, String> historyErrors = {};
   MarketQuote? dollarQuote;
@@ -143,6 +145,23 @@ class PortfolioController extends ChangeNotifier {
     return cost == 0 ? 0 : assetTotalResult(asset) / cost * 100;
   }
 
+  List<InvestmentTransaction> transactionsFor(InvestmentAsset asset) =>
+      transactionsByAsset[asset.syncKey] ?? const [];
+
+  DateTime? trackingStartFor(InvestmentAsset asset) {
+    final transactions = transactionsFor(asset);
+    if (transactions.isEmpty) return null;
+    return transactions
+        .map((item) => item.transactionDate)
+        .reduce((a, b) => a.isBefore(b) ? a : b);
+  }
+
+  double incomeFor(InvestmentAsset asset) =>
+      calculateTrackedPosition(transactionsFor(asset)).incomeBrl;
+
+  double realizedResultFor(InvestmentAsset asset) =>
+      calculateTrackedPosition(transactionsFor(asset)).realizedResultBrl;
+
   Future<void> initialize() async {
     loading = true;
     notifyListeners();
@@ -170,8 +189,25 @@ class PortfolioController extends ChangeNotifier {
 
   Future<void> _reloadLocalData() async {
     assets = await _database.loadAssets();
+    await _database.ensureOpeningTransactions(assets);
+    await _reloadTransactions();
     dollarQuote = await _database.loadDollarQuote();
     await _reloadSnapshots();
+  }
+
+  Future<void> _reloadTransactions() async {
+    final transactions = await _database.loadTransactions();
+    transactionsByAsset
+      ..clear()
+      ..addEntries(
+        transactions.fold<Map<String, List<InvestmentTransaction>>>(
+          {},
+          (grouped, item) {
+            grouped.putIfAbsent(item.assetKey, () => []).add(item);
+            return grouped;
+          },
+        ).entries,
+      );
   }
 
   Future<void> _reloadSnapshots({DateTime? from}) async {
@@ -327,6 +363,17 @@ class PortfolioController extends ChangeNotifier {
 
     if (totalValue > 0) {
       await _database.saveSnapshot(totalValue, totalCost);
+      for (final asset in assets) {
+        final exchangeRate = asset.currency == AssetCurrency.usd
+            ? (usdBrl > 0 ? usdBrl : asset.averageExchangeRate)
+            : 1.0;
+        await _database.saveAssetDailySnapshot(
+          asset,
+          exchangeRate: exchangeRate,
+          valueBrl: currentValue(asset),
+          costBrl: costValue(asset),
+        );
+      }
       await _reloadSnapshots();
     }
     lastRefresh = DateTime.now();
@@ -560,6 +607,24 @@ class PortfolioController extends ChangeNotifier {
             ? assets.firstWhere((a) => a.id == asset.id).currentPrice
             : asset.previousClose,
       );
+      final existingIndex = assets.indexWhere((item) => item.id == asset.id);
+      final existing = existingIndex < 0 ? null : assets[existingIndex];
+      final existingTransactions =
+          existing == null ? const <InvestmentTransaction>[] : transactionsFor(existing);
+      if (existing != null &&
+          existing.syncKey != normalized.syncKey &&
+          existingTransactions.isNotEmpty) {
+        return 'O código e o mercado não podem mudar depois do início do rastreamento.';
+      }
+      final positionChanged = existing != null &&
+          (existing.quantity != normalized.quantity ||
+              existing.averagePrice != normalized.averagePrice ||
+              existing.averageExchangeRate != normalized.averageExchangeRate);
+      if (positionChanged &&
+          existingTransactions.any((item) =>
+              item.type != InvestmentTransactionType.openingPosition)) {
+        return 'Use “Registrar operação” para alterar quantidade ou preço médio.';
+      }
       var assetToSave = normalized;
       var index = assets.indexWhere((item) => item.id == asset.id);
       if (index >= 0 && assets[index].syncKey != normalized.syncKey) {
@@ -580,6 +645,9 @@ class PortfolioController extends ChangeNotifier {
         );
       }
       final saved = await _database.saveAsset(assetToSave);
+      await _database.ensureOpeningTransactions([saved]);
+      if (positionChanged) await _database.updateOpeningTransaction(saved);
+      await _reloadTransactions();
       index = assets.indexWhere((item) => item.id == asset.id);
       if (index < 0) {
         assets = [...assets, saved]
@@ -605,5 +673,105 @@ class PortfolioController extends ChangeNotifier {
     assetHistories.remove(asset.syncKey);
     notifyListeners();
     if (tursoConfigured) await synchronize(silent: true);
+  }
+
+  Future<String?> recordTransaction({
+    required InvestmentAsset asset,
+    required InvestmentTransactionType type,
+    required DateTime date,
+    double quantity = 0,
+    double unitPrice = 0,
+    double exchangeRate = 1,
+    double fees = 0,
+    double cashValue = 0,
+    String? notes,
+  }) async {
+    if (date.isAfter(DateTime.now().add(const Duration(days: 1)))) {
+      return 'A data da operação não pode estar no futuro.';
+    }
+    if (type.changesPosition && (quantity <= 0 || unitPrice <= 0)) {
+      return 'Informe uma quantidade e um preço válidos.';
+    }
+    if (type.isIncome && cashValue <= 0) {
+      return 'Informe o valor recebido.';
+    }
+    if (asset.currency == AssetCurrency.usd && exchangeRate <= 0) {
+      return 'Informe a cotação do dólar usada na operação.';
+    }
+    if (type == InvestmentTransactionType.sale && quantity > asset.quantity) {
+      return 'A venda não pode superar a quantidade atual.';
+    }
+    try {
+      final now = DateTime.now().toUtc();
+      final transaction = InvestmentTransaction(
+        id: 'txn:${asset.syncKey}:${now.microsecondsSinceEpoch}',
+        assetKey: asset.syncKey,
+        type: type,
+        quantity: quantity,
+        unitPrice: unitPrice,
+        exchangeRate:
+            asset.currency == AssetCurrency.usd ? exchangeRate : 1,
+        fees: fees,
+        cashValue: cashValue,
+        transactionDate: DateTime(date.year, date.month, date.day),
+        notes: notes?.trim().isEmpty == true ? null : notes?.trim(),
+        createdAt: now,
+        updatedAt: now,
+      );
+      await _database.saveTransaction(transaction);
+      final projected = calculateTrackedPosition([
+        ...transactionsFor(asset),
+        transaction,
+      ]);
+      if (type.changesPosition) {
+        final updated = asset.copyWith(
+          quantity: projected.quantity,
+          averagePrice: projected.averagePrice,
+          averageExchangeRate: projected.averageExchangeRate,
+        );
+        final saved = await _database.saveAsset(updated);
+        final index = assets.indexWhere((item) => item.id == asset.id);
+        if (index >= 0) assets[index] = saved;
+      }
+      await _reloadTransactions();
+      notifyListeners();
+      if (type.changesPosition) {
+        await refresh();
+      } else if (tursoConfigured) {
+        await synchronize(silent: true);
+      }
+      return null;
+    } catch (_) {
+      return 'Não foi possível registrar a operação.';
+    }
+  }
+
+  Future<String?> deleteTransaction(
+    InvestmentAsset asset,
+    InvestmentTransaction transaction,
+  ) async {
+    if (transaction.type == InvestmentTransactionType.openingPosition) {
+      return 'A posição inicial protege a linha de largada do rastreamento.';
+    }
+    try {
+      await _database.deleteTransaction(transaction.id);
+      final remaining = transactionsFor(asset)
+          .where((item) => item.id != transaction.id)
+          .toList();
+      final position = calculateTrackedPosition(remaining);
+      final saved = await _database.saveAsset(asset.copyWith(
+        quantity: position.quantity,
+        averagePrice: position.averagePrice,
+        averageExchangeRate: position.averageExchangeRate,
+      ));
+      final index = assets.indexWhere((item) => item.id == asset.id);
+      if (index >= 0) assets[index] = saved;
+      await _reloadTransactions();
+      notifyListeners();
+      await refresh();
+      return null;
+    } catch (_) {
+      return 'Não foi possível excluir a operação.';
+    }
   }
 }
