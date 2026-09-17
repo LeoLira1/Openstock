@@ -12,6 +12,8 @@ ETFs e BDRs da B3 e ativos negociados nos Estados Unidos.
 - comparação simultânea entre ativos e a carteira em `1M`, `3M`, `6M`, `1A`,
   `5A` e `Máx`;
 - comparação da carteira com o CDI, com rentabilidade sem o efeito dos aportes;
+- renda fixa (CDB, LCI, LCA) corrigida sozinha por percentual do CDI ou taxa
+  prefixada, com valor líquido de imposto de renda;
 - modo comparativo normalizado em 0% e modo de preço nominal;
 - detalhes do ativo, linha do preço médio e visão relativa ao preço médio;
 - sincronização opcional por Turso, mantendo SQLite como cache offline;
@@ -65,6 +67,55 @@ modo **Desempenho %**.
 No modo **Preço**, ativos em BRL e USD mantêm sua moeda de negociação. Para
 comparação neutra de moeda, use **Desempenho %**. A linha da carteira permanece
 em BRL e segue a conversão USD/BRL usada no painel.
+
+## Renda fixa
+
+Um título entra pela aba **Ativos** escolhendo **Renda fixa** no formulário:
+tipo (CDB, LCI, LCA ou outro), apelido, valor aplicado, indexador, taxa, data da
+aplicação e vencimento opcional. Não há cotação a buscar — o valor é calculado
+a partir do que foi aplicado.
+
+Para **% do CDI**, cada dia útil multiplica o valor pelo fator do mercado:
+
+```text
+fator_do_dia = 1 + (taxa_cdi_do_dia / 100) * (percentual / 100)
+```
+
+O percentual incide sobre a taxa do dia, não sobre o fator acumulado — é a
+convenção usada nos contratos de CDB, LCI e LCA.
+
+Para **prefixado**, a taxa contratada é convertida para o dia útil na convenção
+de 252 dias:
+
+```text
+fator_do_dia = (1 + taxa_anual / 100) ^ (1 / 252)
+```
+
+O calendário de dias úteis é a própria série do CDI: o Banco Central publica a
+taxa exatamente nos dias em que o título rende, então feriados e fins de semana
+ficam de fora sem precisar de uma tabela de feriados no aplicativo. O dia da
+aplicação ainda não rende e o rendimento para no vencimento. Como o Banco
+Central divulga a taxa com um dia de atraso, a tela do título mostra até quando
+ele está corrigido.
+
+A tela do título também estima o **valor líquido**. LCI e LCA são isentas para
+pessoa física; nos demais vale a tabela regressiva sobre o rendimento, pelo
+prazo em dias corridos desde a aplicação:
+
+| Prazo | Alíquota |
+| --- | --- |
+| até 180 dias | 22,5% |
+| 181 a 360 dias | 20% |
+| 361 a 720 dias | 17,5% |
+| acima de 720 dias | 15% |
+
+O título guarda o valor aplicado no preço médio com quantidade 1, de modo que
+patrimônio, custo e resultado da carteira usam o mesmo cálculo dos demais
+ativos, e a comparação com o CDI passa a incluir a renda fixa.
+
+IPCA+ ainda não é suportado: o IPCA é mensal e entra nos títulos com defasagem,
+o que exigiria uma regra própria de pro rata em vez de reaproveitar o calendário
+diário usado aqui.
 
 ## Histórico e cache
 

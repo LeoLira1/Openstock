@@ -6,6 +6,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
 
 import 'controllers/portfolio_controller.dart';
+import 'models/fixed_income.dart';
 import 'models/investment_asset.dart';
 import 'screens/asset_detail_screen.dart';
 import 'screens/comparison_screen.dart';
@@ -383,13 +384,13 @@ class AssetsScreen extends StatelessWidget {
                                       fontWeight: FontWeight.w800)),
                               const SizedBox(height: 3),
                               Text(
-                                '${_quantity(asset.quantity)} cotas • ${_marketName(asset.market)}',
+                                _assetSubtitle(asset),
                                 style: const TextStyle(
                                     color: _muted, fontSize: 12),
                               ),
                               const SizedBox(height: 6),
                               Text(
-                                'PM ${_assetMoney(asset.averagePrice, asset.currency)}  •  Atual ${_assetMoney(asset.currentPrice ?? asset.averagePrice, asset.currency)}',
+                                _assetPriceLine(asset),
                                 style: const TextStyle(fontSize: 12),
                               ),
                             ],
@@ -730,9 +731,16 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
   late final TextEditingController averagePrice;
   late final TextEditingController averageFx;
   late final TextEditingController currentPrice;
+  late final TextEditingController indexerRate;
   late AssetMarket market;
   late AssetCurrency currency;
+  late FixedIncomeKind fixedIncomeKind;
+  late FixedIncomeIndexer indexer;
+  DateTime? applicationDate;
+  DateTime? maturityDate;
   bool saving = false;
+
+  bool get isFixedIncome => market == AssetMarket.fixedIncome;
 
   @override
   void initState() {
@@ -752,6 +760,12 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
         text: asset?.currentPrice == null ? '' : _plain(asset!.currentPrice!));
     market = asset?.market ?? AssetMarket.b3;
     currency = asset?.currency ?? AssetCurrency.brl;
+    fixedIncomeKind = asset?.fixedIncomeKind ?? FixedIncomeKind.cdb;
+    indexer = asset?.indexer ?? FixedIncomeIndexer.cdi;
+    indexerRate = TextEditingController(
+        text: asset?.indexerRate == null ? '' : _plain(asset!.indexerRate!));
+    applicationDate = asset?.applicationDate;
+    maturityDate = asset?.maturityDate;
   }
 
   @override
@@ -762,6 +776,7 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
     averagePrice.dispose();
     averageFx.dispose();
     currentPrice.dispose();
+    indexerRate.dispose();
     super.dispose();
   }
 
@@ -799,22 +814,38 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
                     style: const TextStyle(
                         fontSize: 24, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 6),
-                const Text('Use o código de negociação, como PRIO3 ou VOO.',
-                    style: TextStyle(color: _muted)),
+                Text(
+                  isFixedIncome
+                      ? 'Informe o valor aplicado e a taxa contratada. O título '
+                          'se corrige sozinho pelo CDI do Banco Central.'
+                      : 'Use o código de negociação, como PRIO3 ou VOO.',
+                  style: const TextStyle(color: _muted),
+                ),
                 const SizedBox(height: 22),
-                SegmentedButton<AssetMarket>(
-                  segments: const [
-                    ButtonSegment(value: AssetMarket.b3, label: Text('B3')),
-                    ButtonSegment(value: AssetMarket.usa, label: Text('EUA')),
-                    ButtonSegment(
-                        value: AssetMarket.manual, label: Text('Manual')),
-                  ],
-                  selected: {market},
-                  onSelectionChanged: (value) => setState(() {
-                    market = value.first;
-                    if (market == AssetMarket.b3) currency = AssetCurrency.brl;
-                    if (market == AssetMarket.usa) currency = AssetCurrency.usd;
-                  }),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SegmentedButton<AssetMarket>(
+                    segments: const [
+                      ButtonSegment(value: AssetMarket.b3, label: Text('B3')),
+                      ButtonSegment(value: AssetMarket.usa, label: Text('EUA')),
+                      ButtonSegment(
+                          value: AssetMarket.manual, label: Text('Manual')),
+                      ButtonSegment(
+                          value: AssetMarket.fixedIncome,
+                          label: Text('Renda fixa')),
+                    ],
+                    selected: {market},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (value) => setState(() {
+                      market = value.first;
+                      if (market != AssetMarket.usa) {
+                        currency = AssetCurrency.brl;
+                      } else {
+                        currency = AssetCurrency.usd;
+                      }
+                      applicationDate ??= DateTime.now();
+                    }),
+                  ),
                 ),
                 const SizedBox(height: 18),
                 if (market == AssetMarket.manual) ...[
@@ -831,30 +862,100 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
                   ),
                   const SizedBox(height: 14),
                 ],
+                if (isFixedIncome) ...[
+                  DropdownButtonFormField<FixedIncomeKind>(
+                    initialValue: fixedIncomeKind,
+                    decoration: const InputDecoration(labelText: 'Tipo'),
+                    items: FixedIncomeKind.values
+                        .map((value) => DropdownMenuItem(
+                            value: value, child: Text(value.label)))
+                        .toList(),
+                    onChanged: (value) =>
+                        setState(() => fixedIncomeKind = value!),
+                  ),
+                  const SizedBox(height: 14),
+                ],
                 TextFormField(
                   controller: symbol,
                   textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(
-                    labelText: 'Código do ativo',
-                    hintText: 'Ex.: BBAS3, VOO',
-                    prefixIcon: Icon(Icons.tag_rounded),
+                  decoration: InputDecoration(
+                    labelText:
+                        isFixedIncome ? 'Apelido do título' : 'Código do ativo',
+                    hintText: isFixedIncome
+                        ? 'Ex.: CDB BTG 2028'
+                        : 'Ex.: BBAS3, VOO',
+                    prefixIcon: const Icon(Icons.tag_rounded),
                   ),
                   validator: (value) => value == null || value.trim().isEmpty
-                      ? 'Informe o código do ativo'
+                      ? (isFixedIncome
+                          ? 'Dê um apelido para reconhecer o título'
+                          : 'Informe o código do ativo')
                       : null,
                 ),
                 const SizedBox(height: 14),
                 TextFormField(
                   controller: name,
                   textCapitalization: TextCapitalization.words,
-                  decoration: const InputDecoration(
-                    labelText: 'Nome (opcional)',
-                    hintText: 'Ex.: Banco do Brasil',
-                    prefixIcon: Icon(Icons.business_rounded),
+                  decoration: InputDecoration(
+                    labelText: isFixedIncome
+                        ? 'Emissor (opcional)'
+                        : 'Nome (opcional)',
+                    hintText: isFixedIncome
+                        ? 'Ex.: Banco BTG Pactual'
+                        : 'Ex.: Banco do Brasil',
+                    prefixIcon: const Icon(Icons.business_rounded),
                   ),
                 ),
                 const SizedBox(height: 14),
-                Row(children: [
+                if (isFixedIncome) ...[
+                  _NumberField(
+                    controller: averagePrice,
+                    label: 'Valor aplicado (R\$)',
+                    helper: 'Quanto entrou no título na data da aplicação.',
+                  ),
+                  const SizedBox(height: 14),
+                  SegmentedButton<FixedIncomeIndexer>(
+                    segments: FixedIncomeIndexer.values
+                        .map((value) => ButtonSegment(
+                            value: value, label: Text(value.label)))
+                        .toList(),
+                    selected: {indexer},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (value) =>
+                        setState(() => indexer = value.first),
+                  ),
+                  const SizedBox(height: 14),
+                  _NumberField(
+                    controller: indexerRate,
+                    label: indexer == FixedIncomeIndexer.cdi
+                        ? 'Percentual do CDI (%)'
+                        : 'Taxa contratada (% ao ano)',
+                    helper: indexer == FixedIncomeIndexer.cdi
+                        ? 'Ex.: 110 para um CDB de 110% do CDI.'
+                        : 'Ex.: 12,5 para 12,5% ao ano em 252 dias úteis.',
+                  ),
+                  const SizedBox(height: 14),
+                  _DateField(
+                    label: 'Data da aplicação',
+                    value: applicationDate,
+                    firstDate: DateTime(2000),
+                    lastDate: DateTime.now(),
+                    onChanged: (value) =>
+                        setState(() => applicationDate = value),
+                  ),
+                  const SizedBox(height: 14),
+                  _DateField(
+                    label: 'Vencimento (opcional)',
+                    value: maturityDate,
+                    firstDate: applicationDate ?? DateTime(2000),
+                    lastDate: DateTime(DateTime.now().year + 50),
+                    helper: 'No vencimento o título para de render.',
+                    onClear: () => setState(() => maturityDate = null),
+                    onChanged: (value) => setState(() => maturityDate = value),
+                  ),
+                ],
+                if (!isFixedIncome)
+                  Row(children: [
                   Expanded(
                       child: _NumberField(
                           controller: quantity, label: 'Quantidade')),
@@ -865,8 +966,8 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
                       label: usd ? 'Preço médio (US\$)' : 'Preço médio (R\$)',
                     ),
                   ),
-                ]),
-                if (usd) ...[
+                  ]),
+                if (usd && !isFixedIncome) ...[
                   const SizedBox(height: 14),
                   _NumberField(
                     controller: averageFx,
@@ -907,6 +1008,10 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
 
   Future<void> _save() async {
     if (!formKey.currentState!.validate()) return;
+    if (isFixedIncome) {
+      await _saveFixedIncome();
+      return;
+    }
     final qty = _parseNumber(quantity.text);
     final avg = _parseNumber(averagePrice.text);
     final fx =
@@ -951,8 +1056,120 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
     }
   }
 
+  Future<void> _saveFixedIncome() async {
+    final principal = _parseNumber(averagePrice.text);
+    final rate = _parseNumber(indexerRate.text);
+    final application = applicationDate;
+    if (principal == null || principal <= 0) {
+      _showError('Informe o valor aplicado no título.');
+      return;
+    }
+    if (rate == null || rate <= 0) {
+      _showError('Informe a taxa contratada do título.');
+      return;
+    }
+    if (application == null) {
+      _showError('Informe a data da aplicação.');
+      return;
+    }
+    if (_day(application).isAfter(_day(DateTime.now()))) {
+      _showError('A data da aplicação não pode estar no futuro.');
+      return;
+    }
+    if (maturityDate != null && !maturityDate!.isAfter(application)) {
+      _showError('O vencimento precisa ser depois da aplicação.');
+      return;
+    }
+    setState(() => saving = true);
+    final original = widget.asset;
+    final error = await widget.controller.saveAsset(InvestmentAsset(
+      id: original?.id,
+      symbol: symbol.text,
+      name: name.text,
+      market: AssetMarket.fixedIncome,
+      currency: AssetCurrency.brl,
+      // O título é uma posição só: o principal fica no preço médio para que o
+      // custo e o resultado da carteira usem o mesmo cálculo dos demais ativos.
+      quantity: 1,
+      averagePrice: principal,
+      fixedIncomeKind: fixedIncomeKind,
+      indexer: indexer,
+      indexerRate: rate,
+      applicationDate: _day(application),
+      maturityDate: maturityDate == null ? null : _day(maturityDate!),
+      currentPrice: original?.currentPrice,
+      previousClose: original?.previousClose,
+      updatedAt: original?.updatedAt,
+    ));
+    if (!mounted) return;
+    setState(() => saving = false);
+    if (error != null) {
+      _showError(error);
+    } else {
+      Navigator.pop(context);
+    }
+  }
+
   void _showError(String text) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+}
+
+/// Campo de data em formato brasileiro, com limpeza opcional.
+class _DateField extends StatelessWidget {
+  const _DateField({
+    required this.label,
+    required this.value,
+    required this.firstDate,
+    required this.lastDate,
+    required this.onChanged,
+    this.helper,
+    this.onClear,
+  });
+
+  final String label;
+  final DateTime? value;
+  final DateTime firstDate;
+  final DateTime lastDate;
+  final ValueChanged<DateTime> onChanged;
+  final String? helper;
+  final VoidCallback? onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(15),
+      onTap: () async {
+        var initial = value ?? DateTime.now();
+        if (initial.isBefore(firstDate)) initial = firstDate;
+        if (initial.isAfter(lastDate)) initial = lastDate;
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: initial,
+          firstDate: firstDate,
+          lastDate: lastDate,
+        );
+        if (picked != null) onChanged(picked);
+      },
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: label,
+          helperText: helper,
+          prefixIcon: const Icon(Icons.event_rounded),
+          suffixIcon: value != null && onClear != null
+              ? IconButton(
+                  tooltip: 'Limpar data',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: onClear,
+                )
+              : null,
+        ),
+        child: Text(
+          value == null ? 'Selecionar' : _date(value!),
+          style: TextStyle(color: value == null ? _muted : null),
+        ),
+      ),
+    );
   }
 }
 
@@ -1190,6 +1407,7 @@ class _TickerBadge extends StatelessWidget {
       AssetMarket.b3 => 'BR',
       AssetMarket.usa => 'US',
       AssetMarket.manual => 'M',
+      AssetMarket.fixedIncome => 'RF',
     };
     return Container(
       width: 43,
@@ -1543,10 +1761,25 @@ String _signedPercent(double value) =>
 String _quantity(double value) =>
     NumberFormat.decimalPattern('pt_BR').format(value);
 String _plain(double value) => value.toString().replaceAll('.', ',');
+String _date(DateTime value) => DateFormat('dd/MM/yyyy').format(value);
+DateTime _day(DateTime value) => DateTime(value.year, value.month, value.day);
+/// Linha de identificação do ativo: cotas e mercado, ou tipo e indexador.
+String _assetSubtitle(InvestmentAsset asset) => asset.isFixedIncome
+    ? '${asset.fixedIncomeKind?.label ?? 'Renda fixa'} • '
+        '${fixedIncomeRateLabel(asset)}'
+    : '${_quantity(asset.quantity)} cotas • ${_marketName(asset.market)}';
+
+String _assetPriceLine(InvestmentAsset asset) => asset.isFixedIncome
+    ? 'Aplicado ${_brl.format(asset.principal)}  •  '
+        'Bruto ${_brl.format(asset.currentPrice ?? asset.principal)}'
+    : 'PM ${_assetMoney(asset.averagePrice, asset.currency)}  •  '
+        'Atual ${_assetMoney(asset.currentPrice ?? asset.averagePrice, asset.currency)}';
+
 String _marketName(AssetMarket market) => switch (market) {
       AssetMarket.b3 => 'B3',
       AssetMarket.usa => 'EUA',
       AssetMarket.manual => 'Manual',
+      AssetMarket.fixedIncome => 'Renda fixa',
     };
 
 double? _parseNumber(String text) {

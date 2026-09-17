@@ -1,6 +1,29 @@
-enum AssetMarket { b3, usa, manual }
+enum AssetMarket { b3, usa, manual, fixedIncome }
 
 enum AssetCurrency { brl, usd }
+
+/// Tipo do título de renda fixa, que decide a tributação do rendimento.
+enum FixedIncomeKind {
+  cdb('CDB'),
+  lci('LCI'),
+  lca('LCA'),
+  other('Outro');
+
+  const FixedIncomeKind(this.label);
+  final String label;
+
+  /// LCI e LCA são isentas de imposto de renda para pessoa física.
+  bool get taxExempt => this == FixedIncomeKind.lci || this == FixedIncomeKind.lca;
+}
+
+/// Como o título se corrige: percentual do CDI ou taxa prefixada ao ano.
+enum FixedIncomeIndexer {
+  cdi('% do CDI'),
+  prefixed('Prefixado (a.a.)');
+
+  const FixedIncomeIndexer(this.label);
+  final String label;
+}
 
 class InvestmentAsset {
   const InvestmentAsset({
@@ -15,6 +38,11 @@ class InvestmentAsset {
     this.averageExchangeRate = 1,
     this.currentPrice,
     this.previousClose,
+    this.fixedIncomeKind,
+    this.indexer,
+    this.indexerRate,
+    this.applicationDate,
+    this.maturityDate,
     this.updatedAt,
     this.createdAt,
     this.deletedAt,
@@ -31,6 +59,16 @@ class InvestmentAsset {
   final double averageExchangeRate;
   final double? currentPrice;
   final double? previousClose;
+
+  /// Campos preenchidos somente em [AssetMarket.fixedIncome].
+  final FixedIncomeKind? fixedIncomeKind;
+  final FixedIncomeIndexer? indexer;
+
+  /// Percentual do CDI (110 para 110% do CDI) ou taxa anual do prefixado.
+  final double? indexerRate;
+  final DateTime? applicationDate;
+  final DateTime? maturityDate;
+
   final DateTime? updatedAt;
   final DateTime? createdAt;
   final DateTime? deletedAt;
@@ -38,6 +76,15 @@ class InvestmentAsset {
   String get syncKey => stableKey ?? buildAssetKey(market, symbol);
 
   bool get hasQuote => currentPrice != null;
+
+  bool get isFixedIncome => market == AssetMarket.fixedIncome;
+
+  /// Valor aplicado no título; a renda fixa guarda o principal no preço médio
+  /// com quantidade 1, então o mesmo cálculo de custo vale para toda a carteira.
+  double get principal => averagePrice * quantity;
+
+  bool get isMatured =>
+      maturityDate != null && !DateTime.now().isBefore(maturityDate!);
 
   InvestmentAsset copyWith({
     int? id,
@@ -51,6 +98,11 @@ class InvestmentAsset {
     double? averageExchangeRate,
     double? currentPrice,
     double? previousClose,
+    FixedIncomeKind? fixedIncomeKind,
+    FixedIncomeIndexer? indexer,
+    double? indexerRate,
+    DateTime? applicationDate,
+    DateTime? maturityDate,
     DateTime? updatedAt,
     DateTime? createdAt,
     DateTime? deletedAt,
@@ -67,6 +119,11 @@ class InvestmentAsset {
       averageExchangeRate: averageExchangeRate ?? this.averageExchangeRate,
       currentPrice: currentPrice ?? this.currentPrice,
       previousClose: previousClose ?? this.previousClose,
+      fixedIncomeKind: fixedIncomeKind ?? this.fixedIncomeKind,
+      indexer: indexer ?? this.indexer,
+      indexerRate: indexerRate ?? this.indexerRate,
+      applicationDate: applicationDate ?? this.applicationDate,
+      maturityDate: maturityDate ?? this.maturityDate,
       updatedAt: updatedAt ?? this.updatedAt,
       createdAt: createdAt ?? this.createdAt,
       deletedAt: deletedAt ?? this.deletedAt,
@@ -85,6 +142,11 @@ class InvestmentAsset {
         'average_exchange_rate': averageExchangeRate,
         'current_price': currentPrice,
         'previous_close': previousClose,
+        'fixed_income_kind': fixedIncomeKind?.name,
+        'indexer': indexer?.name,
+        'indexer_rate': indexerRate,
+        'application_date': applicationDate?.toIso8601String(),
+        'maturity_date': maturityDate?.toIso8601String(),
         'updated_at': updatedAt?.toIso8601String(),
         'created_at': createdAt?.toIso8601String(),
         'deleted_at': deletedAt?.toIso8601String(),
@@ -104,6 +166,11 @@ class InvestmentAsset {
           (map['average_exchange_rate'] as num?)?.toDouble() ?? 1,
       currentPrice: (map['current_price'] as num?)?.toDouble(),
       previousClose: (map['previous_close'] as num?)?.toDouble(),
+      fixedIncomeKind: _enumOrNull(FixedIncomeKind.values, map['fixed_income_kind']),
+      indexer: _enumOrNull(FixedIncomeIndexer.values, map['indexer']),
+      indexerRate: (map['indexer_rate'] as num?)?.toDouble(),
+      applicationDate: _dateOrNull(map['application_date']),
+      maturityDate: _dateOrNull(map['maturity_date']),
       updatedAt: map['updated_at'] == null
           ? null
           : DateTime.parse(map['updated_at'] as String),
@@ -116,6 +183,18 @@ class InvestmentAsset {
     );
   }
 }
+
+/// Lê um enum gravado pelo nome, tolerando linha antiga ou valor desconhecido.
+T? _enumOrNull<T extends Enum>(List<T> values, Object? raw) {
+  if (raw is! String || raw.isEmpty) return null;
+  for (final value in values) {
+    if (value.name == raw) return value;
+  }
+  return null;
+}
+
+DateTime? _dateOrNull(Object? raw) =>
+    raw is String && raw.isNotEmpty ? DateTime.tryParse(raw) : null;
 
 String buildAssetKey(AssetMarket market, String symbol) {
   final normalized = symbol.trim().toUpperCase().replaceAll('.SA', '');

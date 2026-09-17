@@ -4,7 +4,16 @@ import 'package:sqflite/sqflite.dart';
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
 
-const databaseVersion = 4;
+const databaseVersion = 5;
+
+/// Colunas que a renda fixa acrescenta em `assets`, locais e no Turso.
+const fixedIncomeColumns = <String, String>{
+  'fixed_income_kind': 'TEXT',
+  'indexer': 'TEXT',
+  'indexer_rate': 'REAL',
+  'application_date': 'TEXT',
+  'maturity_date': 'TEXT',
+};
 
 class DatabaseService {
   DatabaseService._();
@@ -39,6 +48,11 @@ class DatabaseService {
         average_exchange_rate REAL NOT NULL DEFAULT 1,
         current_price REAL,
         previous_close REAL,
+        fixed_income_kind TEXT,
+        indexer TEXT,
+        indexer_rate REAL,
+        application_date TEXT,
+        maturity_date TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         deleted_at TEXT,
@@ -76,6 +90,11 @@ class DatabaseService {
         SET updated_at = COALESCE(updated_at, created_at)
         WHERE updated_at IS NULL
       ''');
+    }
+    if (oldVersion < 5) {
+      for (final column in fixedIncomeColumns.entries) {
+        await _addColumnIfMissing(db, 'assets', column.key, column.value);
+      }
     }
     await _createSupportingSchema(db);
   }
@@ -495,13 +514,19 @@ class DatabaseService {
     await db.rawInsert('''
       INSERT INTO assets(
         stable_key, symbol, name, market, currency, quantity, average_price,
-        average_exchange_rate, created_at, updated_at, deleted_at, sync_status
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        average_exchange_rate, fixed_income_kind, indexer, indexer_rate,
+        application_date, maturity_date,
+        created_at, updated_at, deleted_at, sync_status
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       ON CONFLICT(stable_key) DO UPDATE SET
         symbol = excluded.symbol, name = excluded.name, market = excluded.market,
         currency = excluded.currency, quantity = excluded.quantity,
         average_price = excluded.average_price,
         average_exchange_rate = excluded.average_exchange_rate,
+        fixed_income_kind = excluded.fixed_income_kind,
+        indexer = excluded.indexer, indexer_rate = excluded.indexer_rate,
+        application_date = excluded.application_date,
+        maturity_date = excluded.maturity_date,
         created_at = excluded.created_at, updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at, sync_status = 1
       WHERE excluded.updated_at > assets.updated_at
@@ -514,6 +539,11 @@ class DatabaseService {
       row['quantity'],
       row['average_price'],
       row['average_exchange_rate'],
+      row['fixed_income_kind'],
+      row['indexer'],
+      row['indexer_rate'],
+      row['application_date'],
+      row['maturity_date'],
       row['created_at'],
       row['updated_at'],
       row['deleted_at'],

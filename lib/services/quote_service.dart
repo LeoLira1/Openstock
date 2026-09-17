@@ -34,6 +34,15 @@ class QuoteService {
           history: const [],
           historySource: 'manual',
         )),
+      // Renda fixa não tem cotação: o valor vem do CDI publicado, calculado
+      // no controlador. Aqui só devolvemos o último valor já apurado.
+      AssetMarket.fixedIncome => Future.value(MarketQuote(
+          current: asset.currentPrice ?? asset.principal,
+          previousClose:
+              asset.previousClose ?? asset.currentPrice ?? asset.principal,
+          history: const [],
+          historySource: 'cdi',
+        )),
     };
   }
 

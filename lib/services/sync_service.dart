@@ -16,6 +16,7 @@ class SyncService {
   Future<SyncReport> synchronize() async {
     final startedAt = DateTime.now().toUtc().toIso8601String();
     await _ensureRemoteSchema();
+    await _ensureRemoteFixedIncomeColumns();
     final lastSync = await _database.readSyncState('turso_last_sync') ?? '';
     var uploaded = 0;
     var downloaded = 0;
@@ -61,6 +62,11 @@ class SyncService {
           quantity REAL NOT NULL,
           average_price REAL NOT NULL,
           average_exchange_rate REAL NOT NULL,
+          fixed_income_kind TEXT,
+          indexer TEXT,
+          indexer_rate REAL,
+          application_date TEXT,
+          maturity_date TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           deleted_at TEXT
@@ -98,6 +104,31 @@ class SyncService {
           '''CREATE INDEX IF NOT EXISTS idx_openstock_snapshots_updated
         ON openstock_portfolio_snapshots(updated_at)'''),
     ]);
+  }
+
+  /// Acrescenta as colunas de renda fixa em uma base remota criada antes delas.
+  ///
+  /// O SQLite não tem `ADD COLUMN IF NOT EXISTS`, então cada coluna vai em uma
+  /// chamada isolada e a recusa por coluna já existente é o caso esperado.
+  Future<void> _ensureRemoteFixedIncomeColumns() async {
+    try {
+      await _turso.execute(TursoStatement(
+        'SELECT ${fixedIncomeColumns.keys.join(', ')} '
+        'FROM openstock_assets LIMIT 1',
+      ));
+      return;
+    } catch (_) {
+      // Base remota criada antes da renda fixa: falta pelo menos uma coluna.
+    }
+    for (final column in fixedIncomeColumns.entries) {
+      try {
+        await _turso.execute(TursoStatement(
+          'ALTER TABLE openstock_assets ADD COLUMN ${column.key} ${column.value}',
+        ));
+      } catch (_) {
+        // A coluna já existe nesta base remota.
+      }
+    }
   }
 
   Future<int> _pullHistory(String lastSync) async {
@@ -152,13 +183,18 @@ class SyncService {
         .map((row) => TursoStatement('''
           INSERT INTO openstock_assets(
             stable_key, symbol, name, market, currency, quantity, average_price,
-            average_exchange_rate, created_at, updated_at, deleted_at
-          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            average_exchange_rate, fixed_income_kind, indexer, indexer_rate,
+            application_date, maturity_date, created_at, updated_at, deleted_at
+          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(stable_key) DO UPDATE SET
             symbol=excluded.symbol, name=excluded.name, market=excluded.market,
             currency=excluded.currency, quantity=excluded.quantity,
             average_price=excluded.average_price,
             average_exchange_rate=excluded.average_exchange_rate,
+            fixed_income_kind=excluded.fixed_income_kind,
+            indexer=excluded.indexer, indexer_rate=excluded.indexer_rate,
+            application_date=excluded.application_date,
+            maturity_date=excluded.maturity_date,
             created_at=excluded.created_at, updated_at=excluded.updated_at,
             deleted_at=excluded.deleted_at
           WHERE excluded.updated_at > openstock_assets.updated_at
@@ -171,6 +207,11 @@ class SyncService {
               row['quantity'],
               row['average_price'],
               row['average_exchange_rate'],
+              row['fixed_income_kind'],
+              row['indexer'],
+              row['indexer_rate'],
+              row['application_date'],
+              row['maturity_date'],
               row['created_at'],
               row['updated_at'],
               row['deleted_at'],

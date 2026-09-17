@@ -130,6 +130,108 @@ void main() {
     await directory.delete(recursive: true);
   });
 
+  test('título de renda fixa sobrevive ao salvar e recarregar', () async {
+    final directory = await Directory.systemTemp.createTemp('openstock_rf_');
+    final db = await databaseFactoryFfi.openDatabase(
+      '${directory.path}/rf.db',
+      options: OpenDatabaseOptions(
+        version: databaseVersion,
+        onCreate: DatabaseService.createSchema,
+      ),
+    );
+    final service = DatabaseService.forTesting(db);
+
+    await service.saveAsset(InvestmentAsset(
+      stableKey: 'fixedIncome:CDB BTG 2028',
+      symbol: 'CDB BTG 2028',
+      name: 'Banco BTG',
+      market: AssetMarket.fixedIncome,
+      currency: AssetCurrency.brl,
+      quantity: 1,
+      averagePrice: 5000,
+      fixedIncomeKind: FixedIncomeKind.cdb,
+      indexer: FixedIncomeIndexer.cdi,
+      indexerRate: 110,
+      applicationDate: DateTime(2026, 3, 2),
+      maturityDate: DateTime(2028, 3, 2),
+    ));
+
+    final saved = (await service.loadAssets()).single;
+    expect(saved.market, AssetMarket.fixedIncome);
+    expect(saved.fixedIncomeKind, FixedIncomeKind.cdb);
+    expect(saved.indexer, FixedIncomeIndexer.cdi);
+    expect(saved.indexerRate, 110);
+    expect(saved.applicationDate, DateTime(2026, 3, 2));
+    expect(saved.maturityDate, DateTime(2028, 3, 2));
+    expect(saved.principal, 5000);
+
+    await db.close();
+    await directory.delete(recursive: true);
+  });
+
+  test('migração v4 acrescenta as colunas de renda fixa', () async {
+    final directory = await Directory.systemTemp.createTemp('openstock_v4_');
+    final path = '${directory.path}/v4.db';
+    var db = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 4,
+        onCreate: (db, _) async {
+          // Esquema da v4: assets sem nenhuma coluna de renda fixa.
+          await db.execute('''
+            CREATE TABLE assets(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              stable_key TEXT NOT NULL,
+              symbol TEXT NOT NULL,
+              name TEXT NOT NULL,
+              market TEXT NOT NULL,
+              currency TEXT NOT NULL,
+              quantity REAL NOT NULL,
+              average_price REAL NOT NULL,
+              average_exchange_rate REAL NOT NULL DEFAULT 1,
+              current_price REAL,
+              previous_close REAL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              deleted_at TEXT,
+              sync_status INTEGER NOT NULL DEFAULT 0
+            )
+          ''');
+        },
+      ),
+    );
+    await db.insert('assets', {
+      'stable_key': 'b3:PRIO3',
+      'symbol': 'PRIO3',
+      'name': 'PRIO',
+      'market': 'b3',
+      'currency': 'brl',
+      'quantity': 10.0,
+      'average_price': 40.0,
+      'average_exchange_rate': 1.0,
+      'created_at': '2026-09-15T12:00:00.000Z',
+      'updated_at': '2026-09-15T12:00:00.000Z',
+    });
+    await db.close();
+
+    db = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: databaseVersion,
+        onUpgrade: DatabaseService.migrateSchema,
+      ),
+    );
+    final service = DatabaseService.forTesting(db);
+    expect((await service.loadAssets()).single.symbol, 'PRIO3');
+
+    final columns = await db.rawQuery('PRAGMA table_info(assets)');
+    final names = columns.map((row) => row['name']).toSet();
+    expect(names, containsAll(fixedIncomeColumns.keys));
+
+    await db.close();
+    await directory.delete(recursive: true);
+  });
+
   test('CDI é guardado por dia e lido pela janela pedida', () async {
     final directory = await Directory.systemTemp.createTemp('openstock_cdi_');
     final db = await databaseFactoryFfi.openDatabase(
