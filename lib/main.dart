@@ -212,12 +212,20 @@ class _PortfolioShellState extends State<PortfolioShell> {
   }
 }
 
-class HomeDashboard extends StatelessWidget {
+class HomeDashboard extends StatefulWidget {
   const HomeDashboard({super.key, required this.controller});
   final PortfolioController controller;
 
   @override
+  State<HomeDashboard> createState() => _HomeDashboardState();
+}
+
+class _HomeDashboardState extends State<HomeDashboard> {
+  bool _rankByMoney = false;
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
     if (controller.assets.isEmpty) {
       return const _EmptyPortfolio();
     }
@@ -333,25 +341,63 @@ class HomeDashboard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 22),
-          const _SectionTitle(
+          _SectionTitle(
             title: 'Destaques do dia',
-            subtitle: 'Ranking pela variação percentual de cada ativo',
+            subtitle: _rankByMoney
+                ? 'Ranking pelo impacto diário de cada posição em reais'
+                : 'Ranking pela variação percentual de cada ativo',
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: SegmentedButton<bool>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              segments: const [
+                ButtonSegment<bool>(
+                  value: false,
+                  label: Text('%'),
+                  tooltip: 'Ordenar por variação percentual',
+                ),
+                ButtonSegment<bool>(
+                  value: true,
+                  label: Text('R\$'),
+                  tooltip: 'Ordenar pelo ganho ou perda em reais',
+                ),
+              ],
+              selected: {_rankByMoney},
+              onSelectionChanged: (selection) =>
+                  setState(() => _rankByMoney = selection.first),
+            ),
           ),
           const SizedBox(height: 10),
           _DailyRankingCard(
             title: 'Maiores altas',
             icon: Icons.trending_up_rounded,
-            assets: controller.dayGainers.take(3).toList(),
+            assets: (_rankByMoney
+                    ? controller.dayGainersByValue
+                    : controller.dayGainers)
+                .take(3)
+                .toList(),
             controller: controller,
             positive: true,
+            rankByMoney: _rankByMoney,
           ),
           const SizedBox(height: 12),
           _DailyRankingCard(
             title: 'Maiores baixas',
             icon: Icons.trending_down_rounded,
-            assets: controller.dayLosers.take(3).toList(),
+            assets: (_rankByMoney
+                    ? controller.dayLosersByValue
+                    : controller.dayLosers)
+                .take(3)
+                .toList(),
             controller: controller,
             positive: false,
+            rankByMoney: _rankByMoney,
           ),
         ],
       ),
@@ -1393,6 +1439,7 @@ class _DailyRankingCard extends StatelessWidget {
     required this.assets,
     required this.controller,
     required this.positive,
+    required this.rankByMoney,
   });
 
   final String title;
@@ -1400,6 +1447,7 @@ class _DailyRankingCard extends StatelessWidget {
   final List<InvestmentAsset> assets;
   final PortfolioController controller;
   final bool positive;
+  final bool rankByMoney;
 
   @override
   Widget build(BuildContext context) {
@@ -1443,6 +1491,7 @@ class _DailyRankingCard extends StatelessWidget {
                   controller: controller,
                   color: color,
                   showDivider: entry.$1 < assets.length - 1,
+                  rankByMoney: rankByMoney,
                 ),
               ),
           ],
@@ -1459,6 +1508,7 @@ class _DailyRankingRow extends StatelessWidget {
     required this.controller,
     required this.color,
     required this.showDivider,
+    required this.rankByMoney,
   });
 
   final int position;
@@ -1466,6 +1516,7 @@ class _DailyRankingRow extends StatelessWidget {
   final PortfolioController controller;
   final Color color;
   final bool showDivider;
+  final bool rankByMoney;
 
   @override
   Widget build(BuildContext context) {
@@ -1498,7 +1549,9 @@ class _DailyRankingRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    _signedPercent(controller.assetDayPercent(asset)),
+                    rankByMoney
+                         ? _signedMoney(controller.assetDayResult(asset))
+                         : _signedPercent(controller.assetDayPercent(asset)),
                     style: TextStyle(
                       color: color,
                       fontWeight: FontWeight.w800,
@@ -1506,7 +1559,9 @@ class _DailyRankingRow extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    _signedMoney(controller.assetDayResult(asset)),
+                    rankByMoney
+                         ? _signedPercent(controller.assetDayPercent(asset))
+                         : _signedMoney(controller.assetDayResult(asset)),
                     style: const TextStyle(color: _muted, fontSize: 11),
                   ),
                 ],
