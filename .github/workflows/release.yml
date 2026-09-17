@@ -11,12 +11,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: openstock-release
+  group: openstock-release-v2-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   android:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
