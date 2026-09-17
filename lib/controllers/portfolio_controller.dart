@@ -143,6 +143,28 @@ class PortfolioController extends ChangeNotifier {
       );
   }
 
+  /// Ativos que subiram no dia, do maior para o menor impacto em reais.
+  List<InvestmentAsset> get dayGainersByValue {
+    final gainers = assets
+        .where((asset) => assetDayResult(asset) > 0)
+        .toList(growable: false);
+    return [...gainers]
+      ..sort(
+        (a, b) => assetDayResult(b).compareTo(assetDayResult(a)),
+      );
+  }
+
+  /// Ativos que caíram no dia, da maior para a menor perda em reais.
+  List<InvestmentAsset> get dayLosersByValue {
+    final losers = assets
+        .where((asset) => assetDayResult(asset) < 0)
+        .toList(growable: false);
+    return [...losers]
+      ..sort(
+        (a, b) => assetDayResult(a).compareTo(assetDayResult(b)),
+      );
+  }
+
   double assetTotalResult(InvestmentAsset asset) =>
       currentValue(asset) - costValue(asset);
   double assetTotalPercent(InvestmentAsset asset) {

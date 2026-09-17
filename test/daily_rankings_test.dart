@@ -46,4 +46,19 @@ void main() {
     expect(controller.dayGainers.first.symbol, 'MAIOR_ALTA');
     expect(controller.assetDayResult(controller.dayGainers.last), 1000);
   });
+
+  test('ranking em reais considera o impacto total de cada posição', () {
+    final controller = PortfolioController()
+      ..assets = [
+        _asset('ALTA_PERCENTUAL', current: 110, previous: 100),
+        _asset('ALTA_EM_REAIS', current: 101, previous: 100, quantity: 1000),
+        _asset('BAIXA_PERCENTUAL', current: 90, previous: 100),
+        _asset('BAIXA_EM_REAIS', current: 99, previous: 100, quantity: 1000),
+      ];
+
+    expect(controller.dayGainers.first.symbol, 'ALTA_PERCENTUAL');
+    expect(controller.dayGainersByValue.first.symbol, 'ALTA_EM_REAIS');
+    expect(controller.dayLosers.first.symbol, 'BAIXA_PERCENTUAL');
+    expect(controller.dayLosersByValue.first.symbol, 'BAIXA_EM_REAIS');
+  });
 }
