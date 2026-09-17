@@ -78,7 +78,7 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
         ? raw
         : relativeToAverage(raw, asset.averagePrice);
     final selectedPoint =
-        selectedDate == null ? null : valueOnOrBefore(points, selectedDate!);
+        selectedDate == null ? null : pointOnOrBefore(points, selectedDate!);
     final currency = asset.currency == AssetCurrency.brl ? _brl : _usd;
 
     return Scaffold(

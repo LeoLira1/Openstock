@@ -9,7 +9,9 @@ import '../widgets/interactive_history_chart.dart';
 const _green = Color(0xFF39E58C);
 const _red = Color(0xFFFF6B78);
 const _muted = Color(0xFF93A4BC);
+const _cdiColor = Color(0xFFCBD5E1);
 const _portfolioKey = '__portfolio__';
+const _cdiKey = cdiSeriesKey;
 const _palette = <Color>[
   Color(0xFF39E58C),
   Color(0xFF5DA9FF),
@@ -29,7 +31,7 @@ class ComparisonScreen extends StatefulWidget {
 }
 
 class _ComparisonScreenState extends State<ComparisonScreen> {
-  final selected = <String>{_portfolioKey};
+  final selected = <String>{_portfolioKey, _cdiKey};
   HistoryPeriod period = HistoryPeriod.oneMonth;
   ChartMode mode = ChartMode.performance;
   DateTime? selectedDate;
@@ -66,15 +68,25 @@ class _ComparisonScreenState extends State<ComparisonScreen> {
           ? normalizePerformance(controller.portfolioHistory)
           : controller.portfolioHistory;
     }
+    // O CDI é um índice, não tem preço em reais: fora do modo Desempenho ele
+    // só distorceria a escala do gráfico.
+    if (selected.contains(_cdiKey) && mode == ChartMode.performance) {
+      series[_cdiKey] = normalizePerformance(controller.cdiHistory);
+    }
     series.removeWhere((_, points) => points.isEmpty);
     final colors = <String, Color>{};
     var colorIndex = 0;
     for (final key in selected) {
-      colors[key] = _palette[colorIndex++ % _palette.length];
+      // O CDI é referência, não um ativo: cor fixa e neutra, e fora do rodízio
+      // da paleta para não trocar as cores já conhecidas dos ativos.
+      colors[key] = key == _cdiKey
+          ? _cdiColor
+          : _palette[colorIndex++ % _palette.length];
     }
-    final loading = selectedAssets.any(
-      (asset) => controller.isHistoryLoading(asset.syncKey),
-    );
+    final loading = controller.cdiLoading ||
+        selectedAssets.any(
+          (asset) => controller.isHistoryLoading(asset.syncKey),
+        );
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
@@ -134,6 +146,11 @@ class _ComparisonScreenState extends State<ComparisonScreen> {
                       label: 'Minha carteira',
                       color: colors[_portfolioKey] ?? _palette.first,
                     ),
+                    _selector(
+                      keyValue: _cdiKey,
+                      label: 'CDI',
+                      color: colors[_cdiKey] ?? _cdiColor,
+                    ),
                     for (final asset in controller.assets)
                       _selector(
                         keyValue: asset.syncKey,
@@ -180,6 +197,32 @@ class _ComparisonScreenState extends State<ComparisonScreen> {
             ),
           ),
         ),
+        if (selected.contains(_cdiKey)) ...[
+          const SizedBox(height: 14),
+          if (controller.cdiComparison case final comparison?)
+            _CdiSummary(comparison: comparison, period: period)
+          else if (!controller.cdiLoading)
+            const Text(
+              'A comparação com o CDI aparece quando existirem dois snapshots '
+              'reais da carteira dentro do período escolhido.',
+              style: TextStyle(color: _muted, fontSize: 12),
+            ),
+          if (controller.cdiError != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              controller.cdiError!,
+              style: const TextStyle(color: _red, fontSize: 12),
+            ),
+          ],
+          if (mode == ChartMode.price) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'O CDI é um índice acumulado e só aparece no gráfico em '
+              'Desempenho %.',
+              style: TextStyle(color: _muted, fontSize: 12),
+            ),
+          ],
+        ],
         if (mode == ChartMode.price &&
             selectedAssets.map((a) => a.currency).toSet().length > 1) ...[
           const SizedBox(height: 10),
@@ -251,7 +294,7 @@ class _SelectionValues extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.w800)),
           const SizedBox(height: 8),
           for (final entry in series.entries)
-            if (valueOnOrBefore(entry.value, date) case final point?)
+            if (pointOnOrBefore(entry.value, date) case final point?)
               Padding(
                 padding: const EdgeInsets.only(bottom: 5),
                 child: Row(
@@ -281,14 +324,15 @@ class _SelectionValues extends StatelessWidget {
         ],
       );
 
-  String _label(String key) => key == _portfolioKey
-      ? 'Minha carteira'
-      : assets.firstWhere((asset) => asset.syncKey == key).symbol;
+  String _label(String key) => switch (key) {
+        _portfolioKey => 'Minha carteira',
+        _cdiKey => 'CDI',
+        _ => assets.firstWhere((asset) => asset.syncKey == key).symbol,
+      };
 
   String _format(String key, double value) {
-    if (mode == ChartMode.performance) {
-      return '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2).replaceAll('.', ',')}%';
-    }
+    if (mode == ChartMode.performance) return _percentText(value);
+    if (key == _cdiKey) return value.toStringAsFixed(2).replaceAll('.', ',');
     if (key == _portfolioKey) return _brl.format(value);
     final asset = assets.firstWhere((asset) => asset.syncKey == key);
     return (asset.currency == AssetCurrency.brl ? _brl : _usd).format(value);
@@ -299,3 +343,96 @@ final _brl =
     NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$', decimalDigits: 2);
 final _usd =
     NumberFormat.currency(locale: 'pt_BR', symbol: 'US\$', decimalDigits: 2);
+
+/// Resultado da carteira contra o CDI no mesmo intervalo de datas.
+class _CdiSummary extends StatelessWidget {
+  const _CdiSummary({required this.comparison, required this.period});
+
+  final CdiComparison comparison;
+  final HistoryPeriod period;
+
+  @override
+  Widget build(BuildContext context) {
+    final ahead = comparison.beatsCdi;
+    // Com a carteira no vermelho a razão viraria um "-40% do CDI" sem leitura
+    // útil; nesse caso a diferença em pontos percentuais já conta a história.
+    final ratio =
+        comparison.portfolioPercent >= 0 ? comparison.percentOfCdi : null;
+    final dates = DateFormat('dd/MM/yyyy');
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'CARTEIRA × CDI',
+              style: TextStyle(
+                color: _muted,
+                fontSize: 12,
+                letterSpacing: 1.2,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${period.label} · ${dates.format(comparison.start)} a '
+              '${dates.format(comparison.end)}',
+              style: const TextStyle(color: _muted, fontSize: 12),
+            ),
+            const SizedBox(height: 14),
+            _line(
+              label: 'Minha carteira',
+              value: comparison.portfolioPercent,
+              color: comparison.portfolioPercent >= 0 ? _green : _red,
+            ),
+            const SizedBox(height: 6),
+            _line(label: 'CDI no período', value: comparison.cdiPercent),
+            const Divider(height: 24),
+            Text(
+              '${_percentPoints(comparison.differencePoints)} '
+              '${ahead ? 'acima' : 'abaixo'} do CDI',
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 16,
+                color: ahead ? _green : _red,
+              ),
+            ),
+            if (ratio != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'A carteira rendeu ${ratio.toStringAsFixed(0)}% do CDI.',
+                style: const TextStyle(color: _muted),
+              ),
+            ],
+            const SizedBox(height: 10),
+            const Text(
+              'A rentabilidade da carteira desconta aportes e retiradas pela '
+              'variação do valor aplicado, então ela mede o desempenho dos '
+              'ativos, e não o dinheiro que entrou.',
+              style: TextStyle(color: _muted, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _line({required String label, required double value, Color? color}) =>
+      Row(
+        children: [
+          Expanded(child: Text(label)),
+          Text(
+            _percentText(value),
+            style: TextStyle(fontWeight: FontWeight.w700, color: color),
+          ),
+        ],
+      );
+}
+
+String _percentText(double value) =>
+    '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2).replaceAll('.', ',')}%';
+
+/// A distância em pontos percentuais; o sinal vira palavra no texto ao lado.
+String _percentPoints(double value) =>
+    '${value.abs().toStringAsFixed(2).replaceAll('.', ',')} p.p.';

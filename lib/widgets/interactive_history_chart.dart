@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../models/history_models.dart';
 import '../models/investment_asset.dart';
 
 class InteractiveHistoryChart extends StatefulWidget {
@@ -181,7 +182,7 @@ class HistoryChartPainter extends CustomPainter {
           ..strokeWidth = 1,
       );
       for (final entry in series.entries) {
-        final point = valueOnOrBefore(entry.value, selected!);
+        final point = pointOnOrBefore(entry.value, selected!);
         if (point == null) continue;
         canvas.drawCircle(
           Offset(xFor(point.date), yFor(point.value)),
@@ -207,18 +208,6 @@ class HistoryChartPainter extends CustomPainter {
       oldDelegate.selected != selected ||
       oldDelegate.showZeroLine != showZeroLine ||
       oldDelegate.horizontalReference != horizontalReference;
-}
-
-PricePoint? valueOnOrBefore(List<PricePoint> points, DateTime date) {
-  PricePoint? value;
-  for (final point in points) {
-    if (!_day(point.date).isAfter(_day(date))) {
-      value = point;
-    } else {
-      break;
-    }
-  }
-  return value;
 }
 
 DateTime _day(DateTime date) => DateTime(date.year, date.month, date.day);
