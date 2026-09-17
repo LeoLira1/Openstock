@@ -4,6 +4,7 @@ import '../models/fixed_income.dart';
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
 import '../models/investment_transaction.dart';
+import '../models/tracking_analytics.dart';
 import '../services/cdi_service.dart';
 import '../services/database_service.dart';
 import '../services/quote_service.dart';
@@ -39,6 +40,10 @@ class PortfolioController extends ChangeNotifier {
   String? cdiError;
   final Map<String, List<PricePoint>> assetHistories = {};
   final Map<String, List<InvestmentTransaction>> transactionsByAsset = {};
+  final Map<String, AssetTrackingSummary> assetTrackingSummaries = {};
+  AnnualTrackingReport? annualTrackingReport;
+  bool intelligenceLoading = false;
+  String? intelligenceError;
   final Set<String> historyLoading = {};
   final Map<String, String> historyErrors = {};
   MarketQuote? dollarQuote;
@@ -162,6 +167,9 @@ class PortfolioController extends ChangeNotifier {
   double realizedResultFor(InvestmentAsset asset) =>
       calculateTrackedPosition(transactionsFor(asset)).realizedResultBrl;
 
+  AssetTrackingSummary? trackingSummaryFor(InvestmentAsset asset) =>
+      assetTrackingSummaries[asset.syncKey];
+
   Future<void> initialize() async {
     loading = true;
     notifyListeners();
@@ -193,6 +201,7 @@ class PortfolioController extends ChangeNotifier {
     await _reloadTransactions();
     dollarQuote = await _database.loadDollarQuote();
     await _reloadSnapshots();
+    await _reloadLocalTrackingSummaries();
   }
 
   Future<void> _reloadTransactions() async {
@@ -214,6 +223,19 @@ class PortfolioController extends ChangeNotifier {
     portfolioSnapshots = await _database.loadPortfolioSnapshots(from: from);
     portfolioHistory =
         portfolioSnapshots.map((snapshot) => snapshot.toPoint()).toList();
+  }
+
+  Future<void> _reloadLocalTrackingSummaries() async {
+    final rates = await _database.loadCdiRates();
+    assetTrackingSummaries.clear();
+    for (final asset in assets) {
+      final summary = calculateAssetTrackingSummary(
+        snapshots: await _database.loadAssetDailySnapshots(asset.syncKey),
+        transactions: transactionsFor(asset),
+        cdiRates: rates,
+      );
+      if (summary != null) assetTrackingSummaries[asset.syncKey] = summary;
+    }
   }
 
   Future<String?> saveFinnhubKey(String key) async {
@@ -375,6 +397,7 @@ class PortfolioController extends ChangeNotifier {
         );
       }
       await _reloadSnapshots();
+      await _reloadLocalTrackingSummaries();
     }
     lastRefresh = DateTime.now();
     if (errors.isNotEmpty) {
@@ -592,6 +615,180 @@ class PortfolioController extends ChangeNotifier {
     if (tursoConfigured && _historyDirtyForSync) {
       await synchronize(silent: true);
     }
+  }
+
+  Future<void> loadIntelligence(int year) async {
+    if (intelligenceLoading) return;
+    intelligenceLoading = true;
+    intelligenceError = null;
+    annualTrackingReport = null;
+    notifyListeners();
+    final startOfYear = DateTime(year);
+    final now = DateTime.now();
+    if (startOfYear.isAfter(now)) {
+      intelligenceError =
+          'O relatório de $year começará a receber dados em 01/01/$year.';
+      intelligenceLoading = false;
+      notifyListeners();
+      return;
+    }
+    try {
+      final trackingStarts = assets
+          .map(trackingStartFor)
+          .whereType<DateTime>()
+          .toList();
+      final earliest = trackingStarts.isEmpty
+          ? startOfYear
+          : trackingStarts.reduce((a, b) => a.isBefore(b) ? a : b);
+
+      for (final asset in assets) {
+        await ensureHistory(
+          asset,
+          HistoryPeriod.maximum,
+          syncAfter: false,
+        );
+      }
+      await _ensureDollarTrackingHistory(earliest);
+      await _fetchCdiFrom(earliest);
+      await _backfillTrackingSnapshots(earliest, now);
+      await _reloadLocalTrackingSummaries();
+
+      final endOfYear = DateTime(year, 12, 31);
+      final portfolio = await _database.loadPortfolioSnapshots(
+        to: endOfYear,
+      );
+      final transactions = await _database.loadTransactions();
+      final rates = await _database.loadCdiRates(
+        from: startOfYear,
+        to: endOfYear,
+      );
+      annualTrackingReport = calculateAnnualTrackingReport(
+        year: year,
+        snapshots: portfolio,
+        transactions: transactions,
+        cdiRates: rates,
+      );
+      if (annualTrackingReport == null) {
+        intelligenceError = 'Ainda não existem snapshots para $year.';
+      }
+      if (tursoConfigured) await synchronize(silent: true);
+    } catch (error) {
+      intelligenceError = 'Não foi possível montar o relatório: $error';
+    } finally {
+      intelligenceLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _ensureDollarTrackingHistory(DateTime from) async {
+    if (!hasForeignAssets) return;
+    try {
+      final fetched = await _quotes.fetchDollarHistory(from);
+      const dollarSeries = InvestmentAsset(
+        stableKey: 'fx:USDBRL',
+        symbol: 'USDBRL',
+        name: 'Dólar comercial',
+        market: AssetMarket.manual,
+        currency: AssetCurrency.brl,
+        quantity: 0,
+        averagePrice: 1,
+      );
+      await _database.upsertHistory(
+        dollarSeries,
+        fetched,
+        source: 'yahoo',
+      );
+      if (fetched.isNotEmpty) _historyDirtyForSync = true;
+    } catch (_) {
+      // Sem câmbio histórico não se inventa conversão para os dias ausentes.
+    }
+  }
+
+  Future<void> _backfillTrackingSnapshots(
+    DateTime from,
+    DateTime to,
+  ) async {
+    final dollarHistory = await _database.loadAssetHistory(
+      'fx:USDBRL',
+      from: from,
+    );
+    for (final asset in assets) {
+      final start = trackingStartFor(asset);
+      if (start == null) continue;
+      final startDay = DateTime(start.year, start.month, start.day);
+      final prices = await _database.loadAssetHistory(
+        asset.syncKey,
+        from: startDay,
+      );
+      final transactions = transactionsFor(asset);
+      for (final point in prices) {
+        final day = DateTime(point.date.year, point.date.month, point.date.day);
+        if (day.isBefore(startDay) || day.isAfter(to)) continue;
+        final position = calculateTrackedPosition(
+          transactions.where((item) {
+            final transactionDay = DateTime(
+              item.transactionDate.year,
+              item.transactionDate.month,
+              item.transactionDate.day,
+            );
+            return !transactionDay.isAfter(day);
+          }),
+        );
+        final fx = asset.currency == AssetCurrency.brl
+            ? 1.0
+            : pointOnOrBefore(dollarHistory, day)?.value;
+        if (fx == null) continue;
+        await _database.saveAssetDailySnapshotAt(
+          assetKey: asset.syncKey,
+          date: day,
+          quantity: position.quantity,
+          averagePrice: position.averagePrice,
+          exchangeRate: fx,
+          currentPrice: point.value,
+          valueBrl: point.value * position.quantity * fx,
+          costBrl: position.averagePrice *
+              position.quantity *
+              position.averageExchangeRate,
+        );
+      }
+    }
+    await _rebuildPortfolioTracking(from, to);
+  }
+
+  Future<void> _rebuildPortfolioTracking(DateTime from, DateTime to) async {
+    final byAsset = <String, List<AssetDailySnapshot>>{};
+    final dates = <DateTime>{};
+    for (final asset in assets) {
+      final snapshots = await _database.loadAssetDailySnapshots(
+        asset.syncKey,
+        from: from,
+        to: to,
+      );
+      byAsset[asset.syncKey] = snapshots;
+      dates.addAll(snapshots.map((item) => item.date));
+    }
+    final orderedDates = dates.toList()..sort();
+    for (final date in orderedDates) {
+      var value = 0.0;
+      var cost = 0.0;
+      var positions = 0;
+      for (final snapshots in byAsset.values) {
+        AssetDailySnapshot? latest;
+        for (final snapshot in snapshots) {
+          if (snapshot.date.isAfter(date)) break;
+          latest = snapshot;
+        }
+        if (latest != null) {
+          value += latest.valueBrl;
+          cost += latest.costBrl;
+          positions++;
+        }
+      }
+      if (positions > 0) {
+        await _database.savePortfolioSnapshotAt(date, value, cost);
+      }
+    }
+    await _reloadSnapshots();
   }
 
   Future<String?> saveAsset(InvestmentAsset asset) async {

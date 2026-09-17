@@ -10,6 +10,7 @@ import 'models/fixed_income.dart';
 import 'models/investment_asset.dart';
 import 'screens/asset_detail_screen.dart';
 import 'screens/comparison_screen.dart';
+import 'screens/intelligence_screen.dart';
 
 const _ink = Color(0xFF0B1220);
 const _surface = Color(0xFF121C2D);
@@ -159,11 +160,15 @@ class _PortfolioShellState extends State<PortfolioShell> {
                       HomeDashboard(controller: controller),
                       AssetsScreen(controller: controller),
                       ComparisonScreen(controller: controller),
+                      IntelligenceScreen(
+                        controller: controller,
+                        active: index == 3,
+                      ),
                       SettingsScreen(controller: controller),
                     ],
                   ),
           ),
-          floatingActionButton: index == 3
+          floatingActionButton: index >= 3
               ? null
               : FloatingActionButton.extended(
                   backgroundColor: _green,
@@ -191,6 +196,10 @@ class _PortfolioShellState extends State<PortfolioShell> {
                   icon: Icon(Icons.compare_arrows_outlined),
                   selectedIcon: Icon(Icons.compare_arrows_rounded),
                   label: 'Comparar'),
+              NavigationDestination(
+                  icon: Icon(Icons.insights_outlined),
+                  selectedIcon: Icon(Icons.insights_rounded),
+                  label: 'Relatório'),
               NavigationDestination(
                   icon: Icon(Icons.info_outline_rounded),
                   selectedIcon: Icon(Icons.info_rounded),
@@ -624,7 +633,7 @@ class SettingsScreen extends StatelessWidget {
                         Text('OpenStock',
                             style: TextStyle(
                                 fontSize: 22, fontWeight: FontWeight.w800)),
-                        Text('Versão 1.3.0', style: TextStyle(color: _muted)),
+                        Text('Versão 1.4.0', style: TextStyle(color: _muted)),
                       ])
                 ]),
                 SizedBox(height: 24),

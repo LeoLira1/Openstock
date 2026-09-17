@@ -68,6 +68,15 @@ class QuoteService {
 
   Future<MarketQuote> fetchDollar() => _fetchYahoo('BRL=X');
 
+  Future<List<PricePoint>> fetchDollarHistory(DateTime start) async {
+    final quote = await _fetchYahoo(
+      'BRL=X',
+      start: start,
+      end: DateTime.now().toUtc().add(const Duration(days: 1)),
+    );
+    return quote.history;
+  }
+
   Future<MarketQuote> _fetchBrazilian(String rawSymbol) async {
     final symbol = rawSymbol.trim().toUpperCase().replaceAll('.SA', '');
     try {

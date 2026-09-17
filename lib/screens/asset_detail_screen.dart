@@ -356,6 +356,7 @@ class _TrackingCard extends StatelessWidget {
     final start = controller.trackingStartFor(asset);
     final income = controller.incomeFor(asset);
     final realized = controller.realizedResultFor(asset);
+    final summary = controller.trackingSummaryFor(asset);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -401,6 +402,39 @@ class _TrackingCard extends StatelessWidget {
                           color: realized >= 0 ? _green : _red,
                           fontWeight: FontWeight.w700)),
                 ],
+              ),
+            ],
+            if (summary != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: (summary.isUnderwater ? _red : _green)
+                      .withValues(alpha: .10),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      summary.isUnderwater
+                          ? 'No prejuízo há ${summary.currentUnderwaterDays} dias'
+                          : 'Posição fora do prejuízo',
+                      style: TextStyle(
+                        color: summary.isUnderwater ? _red : _green,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Rentabilidade ${_signedPercent(summary.returnPercent)} • '
+                      'CDI ${_signedPercent(summary.cdiPercent)} • '
+                      'maior período negativo ${summary.longestUnderwaterDays} dias',
+                      style: const TextStyle(color: _muted, fontSize: 11),
+                    ),
+                  ],
+                ),
               ),
             ],
             const SizedBox(height: 12),
