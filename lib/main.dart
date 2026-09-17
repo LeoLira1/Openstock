@@ -324,15 +324,26 @@ class HomeDashboard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 22),
-          const _SectionTitle(title: 'Movimentos do dia'),
+          const _SectionTitle(
+            title: 'Destaques do dia',
+            subtitle: 'Ranking pela variação percentual de cada ativo',
+          ),
           const SizedBox(height: 10),
-          ..._sortedByDay(controller).take(5).map(
-                (asset) => Padding(
-                  padding: const EdgeInsets.only(bottom: 9),
-                  child:
-                      _AssetSummaryTile(asset: asset, controller: controller),
-                ),
-              ),
+          _DailyRankingCard(
+            title: 'Maiores altas',
+            icon: Icons.trending_up_rounded,
+            assets: controller.dayGainers.take(3).toList(),
+            controller: controller,
+            positive: true,
+          ),
+          const SizedBox(height: 12),
+          _DailyRankingCard(
+            title: 'Maiores baixas',
+            icon: Icons.trending_down_rounded,
+            assets: controller.dayLosers.take(3).toList(),
+            controller: controller,
+            positive: false,
+          ),
         ],
       ),
     );
@@ -1366,34 +1377,136 @@ class _AllocationRow extends StatelessWidget {
   }
 }
 
-class _AssetSummaryTile extends StatelessWidget {
-  const _AssetSummaryTile({required this.asset, required this.controller});
-  final InvestmentAsset asset;
+class _DailyRankingCard extends StatelessWidget {
+  const _DailyRankingCard({
+    required this.title,
+    required this.icon,
+    required this.assets,
+    required this.controller,
+    required this.positive,
+  });
+
+  final String title;
+  final IconData icon;
+  final List<InvestmentAsset> assets;
   final PortfolioController controller;
+  final bool positive;
+
   @override
   Widget build(BuildContext context) {
-    final value = controller.assetDayResult(asset);
-    final positive = value >= 0;
+    final color = positive ? _green : _red;
     return Card(
-      child: ListTile(
-        leading: _TickerBadge(asset: asset),
-        title: Text(asset.symbol,
-            style: const TextStyle(fontWeight: FontWeight.w800)),
-        subtitle:
-            Text(asset.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-        trailing: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(_signedMoney(value),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 15, 16, 9),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color, size: 21),
+                const SizedBox(width: 8),
+                Text(
+                  title,
                   style: TextStyle(
-                      color: positive ? _green : _red,
-                      fontWeight: FontWeight.w700)),
-              Text(_signedPercent(controller.assetDayPercent(asset)),
-                  style:
-                      TextStyle(color: positive ? _green : _red, fontSize: 12)),
-            ]),
+                    color: color,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 7),
+            if (assets.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 13),
+                child: Text(
+                  positive
+                      ? 'Nenhum ativo em alta hoje.'
+                      : 'Nenhum ativo em baixa hoje.',
+                  style: const TextStyle(color: _muted, fontSize: 13),
+                ),
+              )
+            else
+              ...assets.indexed.map(
+                (entry) => _DailyRankingRow(
+                  position: entry.$1 + 1,
+                  asset: entry.$2,
+                  controller: controller,
+                  color: color,
+                  showDivider: entry.$1 < assets.length - 1,
+                ),
+              ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _DailyRankingRow extends StatelessWidget {
+  const _DailyRankingRow({
+    required this.position,
+    required this.asset,
+    required this.controller,
+    required this.color,
+    required this.showDivider,
+  });
+
+  final int position;
+  final InvestmentAsset asset;
+  final PortfolioController controller;
+  final Color color;
+  final bool showDivider;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 24,
+                child: Text(
+                  '$position',
+                  style: const TextStyle(
+                    color: _muted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  asset.symbol,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    _signedPercent(controller.assetDayPercent(asset)),
+                    style: TextStyle(
+                      color: color,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _signedMoney(controller.assetDayResult(asset)),
+                    style: const TextStyle(color: _muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        if (showDivider) const Divider(height: 1, color: Color(0xFF213047)),
+      ],
     );
   }
 }
@@ -1736,12 +1849,6 @@ Future<void> _removeTurso(
 List<InvestmentAsset> _sortedByValue(PortfolioController controller) =>
     [...controller.assets]..sort((a, b) =>
         controller.currentValue(b).compareTo(controller.currentValue(a)));
-
-List<InvestmentAsset> _sortedByDay(PortfolioController controller) =>
-    [...controller.assets]..sort((a, b) => controller
-        .assetDayResult(b)
-        .abs()
-        .compareTo(controller.assetDayResult(a).abs()));
 
 final _brl =
     NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$', decimalDigits: 2);
