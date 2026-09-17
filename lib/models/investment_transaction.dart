@@ -125,7 +125,6 @@ TrackedPosition calculateTrackedPosition(
     } else if (item.type == InvestmentTransactionType.sale && quantity > 0) {
       final sold = item.quantity.clamp(0, quantity).toDouble();
       final average = cost / quantity;
-      final averageFx = cost == 0 ? item.exchangeRate : costBrl / cost;
       realizedBrl +=
           ((item.unitPrice - average) * sold - item.fees) * item.exchangeRate;
       final fraction = sold / quantity;
