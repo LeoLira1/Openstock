@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../controllers/portfolio_controller.dart';
+import '../models/fixed_income.dart';
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
 import '../widgets/interactive_history_chart.dart';
@@ -77,6 +78,10 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
     final points = mode == AssetChartMode.price
         ? raw
         : relativeToAverage(raw, asset.averagePrice);
+    final accrued = widget.controller.assetHistories[asset.syncKey] ?? const [];
+    final position = asset.isFixedIncome
+        ? fixedIncomePosition(asset: asset, accrued: accrued)
+        : null;
     final selectedPoint =
         selectedDate == null ? null : pointOnOrBefore(points, selectedDate!);
     final currency = asset.currency == AssetCurrency.brl ? _brl : _usd;
@@ -120,18 +125,44 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
               spacing: 10,
               runSpacing: 10,
               children: [
-                _metric('Quantidade', _quantity(asset.quantity)),
-                _metric('Preço médio', currency.format(asset.averagePrice)),
-                _metric('Valor investido',
+                if (asset.isFixedIncome) ...[
+                  _metric('Indexador', fixedIncomeRateLabel(asset)),
+                  _metric(
+                    'Aplicado em',
+                    asset.applicationDate == null
+                        ? '—'
+                        : DateFormat('dd/MM/yyyy').format(asset.applicationDate!),
+                  ),
+                ] else ...[
+                  _metric('Quantidade', _quantity(asset.quantity)),
+                  _metric('Preço médio', currency.format(asset.averagePrice)),
+                ],
+                _metric(
+                    asset.isFixedIncome ? 'Valor aplicado' : 'Valor investido',
                     _brl.format(widget.controller.costValue(asset))),
-                _metric('Valor atual',
+                _metric(asset.isFixedIncome ? 'Valor bruto' : 'Valor atual',
                     _brl.format(widget.controller.currentValue(asset))),
-                _metric('Lucro/prejuízo',
+                _metric(
+                    asset.isFixedIncome ? 'Rendimento bruto' : 'Lucro/prejuízo',
                     _signedMoney(widget.controller.assetTotalResult(asset)),
                     positive: widget.controller.assetTotalResult(asset) >= 0),
                 _metric('Resultado total',
                     _signedPercent(widget.controller.assetTotalPercent(asset)),
                     positive: widget.controller.assetTotalResult(asset) >= 0),
+                if (position != null) ...[
+                  _metric(
+                    position.taxRate == 0
+                        ? 'Líquido (isento)'
+                        : 'Líquido (IR ${_plainPercent(position.taxRate)})',
+                    _brl.format(position.netValue),
+                  ),
+                  _metric('Dias úteis rendendo', '${position.businessDays}'),
+                ],
+                if (asset.maturityDate != null)
+                  _metric(
+                    asset.isMatured ? 'Venceu em' : 'Vence em',
+                    DateFormat('dd/MM/yyyy').format(asset.maturityDate!),
+                  ),
               ],
             ),
             const SizedBox(height: 22),
@@ -155,12 +186,16 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
             ),
             const SizedBox(height: 12),
             SegmentedButton<AssetChartMode>(
-              segments: const [
+              segments: [
                 ButtonSegment(
-                    value: AssetChartMode.price, label: Text('Preço')),
+                    value: AssetChartMode.price,
+                    label: Text(asset.isFixedIncome ? 'Valor' : 'Preço')),
                 ButtonSegment(
-                    value: AssetChartMode.relativeAverage,
-                    label: Text('vs. meu preço médio')),
+                  value: AssetChartMode.relativeAverage,
+                  label: Text(asset.isFixedIncome
+                      ? 'Rentabilidade'
+                      : 'vs. meu preço médio'),
+                ),
               ],
               selected: {mode},
               onSelectionChanged: (value) => setState(() {
@@ -207,10 +242,21 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
                             color: const Color(0xFFFFC857)),
                         const SizedBox(width: 8),
                         Text(
-                            'Meu preço médio: ${currency.format(asset.averagePrice)}',
+                            asset.isFixedIncome
+                                ? 'Valor aplicado: ${currency.format(asset.averagePrice)}'
+                                : 'Meu preço médio: ${currency.format(asset.averagePrice)}',
                             style:
                                 const TextStyle(color: _muted, fontSize: 12)),
                       ]),
+                    if (asset.isFixedIncome && accrued.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        'Corrigido pelo CDI publicado até '
+                        '${DateFormat('dd/MM/yyyy').format(accrued.last.date)}. '
+                        'O Banco Central divulga a taxa com um dia de atraso.',
+                        style: const TextStyle(color: _muted, fontSize: 12),
+                      ),
+                    ],
                     if (selectedPoint != null) ...[
                       const SizedBox(height: 12),
                       Text(
@@ -272,3 +318,5 @@ String _signedPercent(double value) =>
     '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2).replaceAll('.', ',')}%';
 String _quantity(double value) =>
     NumberFormat.decimalPattern('pt_BR').format(value);
+String _plainPercent(double value) =>
+    '${value.toStringAsFixed(value == value.roundToDouble() ? 0 : 1).replaceAll('.', ',')}%';

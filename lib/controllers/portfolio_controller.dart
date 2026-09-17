@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../models/fixed_income.dart';
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
 import '../services/cdi_service.dart';
@@ -278,7 +279,7 @@ class PortfolioController extends ChangeNotifier {
 
     for (var i = 0; i < assets.length; i++) {
       final asset = assets[i];
-      if (asset.market == AssetMarket.manual) continue;
+      if (asset.market == AssetMarket.manual || asset.isFixedIncome) continue;
       try {
         final quote = await _quotes.fetch(asset);
         if (asset.id != null) await _database.saveQuote(asset.id!, quote);
@@ -295,6 +296,9 @@ class PortfolioController extends ChangeNotifier {
         errors.add(asset.symbol);
       }
     }
+
+    await refreshFixedIncome();
+    if (cdiError != null) errors.add('CDI');
 
     if (totalValue > 0) {
       await _database.saveSnapshot(totalValue, totalCost);
@@ -324,6 +328,20 @@ class PortfolioController extends ChangeNotifier {
     notifyListeners();
     final from = period.startFrom(DateTime.now());
     try {
+      if (asset.isFixedIncome) {
+        // A série da renda fixa é calculada, não baixada: ela vem do principal
+        // corrigido pelas taxas do Banco Central que já estão em cache.
+        final fresh = await _database.historyFetchIsFresh(
+          cdiSeriesKey,
+          HistoryPeriod.maximum,
+        );
+        await refreshFixedIncome(fetch: force || !fresh);
+        if ((assetHistories[key] ?? const []).isEmpty) {
+          historyErrors[key] =
+              'Informe indexador, taxa e data de aplicação do título.';
+        }
+        return;
+      }
       var cached = await _database.loadAssetHistory(key, from: from);
       assetHistories[key] = await _database.loadAssetHistory(key);
       notifyListeners();
@@ -398,6 +416,73 @@ class PortfolioController extends ChangeNotifier {
       cdiLoading = false;
       notifyListeners();
     }
+  }
+
+  /// Recalcula o valor dos títulos de renda fixa com o CDI publicado.
+  ///
+  /// Nada é cotado: o Banco Central fornece só a taxa do dia, e o valor de cada
+  /// título vem do principal corrigido dia útil a dia útil.
+  Future<void> refreshFixedIncome({bool fetch = true, bool force = false}) async {
+    final titles = assets.where((asset) => asset.isFixedIncome).toList();
+    if (titles.isEmpty) return;
+    final earliest = titles
+        .map((asset) => asset.applicationDate ?? DateTime.now())
+        .reduce((a, b) => a.isBefore(b) ? a : b);
+    if (fetch) {
+      try {
+        await _fetchCdiFrom(earliest, force: force);
+        cdiError = null;
+      } catch (error) {
+        cdiError = 'CDI indisponível: $error';
+      }
+    }
+    final rates = await _database.loadCdiRates(from: earliest);
+    for (var i = 0; i < assets.length; i++) {
+      final asset = assets[i];
+      if (!asset.isFixedIncome) continue;
+      final accrued = accrueFixedIncome(asset: asset, rates: rates);
+      final position =
+          fixedIncomePosition(asset: asset, accrued: accrued);
+      if (position == null) continue;
+      assetHistories[asset.syncKey] = accrued;
+      assets[i] = asset.copyWith(
+        currentPrice: position.grossValue,
+        previousClose: position.previousGrossValue,
+      );
+      if (asset.id != null) {
+        // O valor fica gravado para a abertura seguinte já mostrar o título
+        // corrigido, mesmo antes de o CDI do dia ser buscado.
+        await _database.saveQuote(
+          asset.id!,
+          MarketQuote(
+            current: position.grossValue,
+            previousClose: position.previousGrossValue,
+            history: const [],
+            historySource: 'cdi',
+          ),
+        );
+      }
+    }
+    notifyListeners();
+  }
+
+  /// Garante o CDI em cache desde [from], buscando apenas o trecho que falta.
+  Future<void> _fetchCdiFrom(DateTime from, {bool force = false}) async {
+    final coverage = await _database.cdiCoverage();
+    // Tolerância de uma semana: uma aplicação em sexta, sábado ou véspera de
+    // feriado tem como primeiro dia útil um dia bem depois da própria data.
+    final covered = coverage != null &&
+        !coverage.oldest.isAfter(from.add(const Duration(days: 7)));
+    final fresh = await _database.historyFetchIsFresh(
+      cdiSeriesKey,
+      HistoryPeriod.maximum,
+    );
+    if (!force && fresh && covered) return;
+    final fetched = await _cdi.fetchDailyRates(
+      start: covered ? coverage.newest : from,
+    );
+    await _database.upsertCdiRates(fetched);
+    await _database.markHistoryFetched(cdiSeriesKey, HistoryPeriod.maximum);
   }
 
   Future<void> _reloadCdi(DateTime from) async {
