@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openstock/models/history_models.dart';
 import 'package:openstock/models/investment_asset.dart';
+import 'package:openstock/models/investment_transaction.dart';
 import 'package:openstock/services/database_service.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -267,6 +268,52 @@ void main() {
     final snapshots = await service.loadPortfolioSnapshots();
     expect(snapshots.single.totalBrl, 1100);
     expect(snapshots.single.costBrl, 1000);
+
+    await db.close();
+    await directory.delete(recursive: true);
+  });
+
+  test('rastreamento cria uma única posição inicial e snapshot diário', () async {
+    final directory =
+        await Directory.systemTemp.createTemp('openstock_tracking_');
+    final db = await databaseFactoryFfi.openDatabase(
+      '${directory.path}/tracking.db',
+      options: OpenDatabaseOptions(
+        version: databaseVersion,
+        onCreate: DatabaseService.createSchema,
+      ),
+    );
+    final service = DatabaseService.forTesting(db);
+    final saved = await service.saveAsset(const InvestmentAsset(
+      stableKey: 'b3:PRIO3',
+      symbol: 'PRIO3',
+      name: 'PRIO',
+      market: AssetMarket.b3,
+      currency: AssetCurrency.brl,
+      quantity: 100,
+      averagePrice: 40,
+      currentPrice: 42,
+    ));
+
+    await service.ensureOpeningTransactions([saved],
+        trackingDate: DateTime(2026, 9, 17));
+    await service.ensureOpeningTransactions([saved],
+        trackingDate: DateTime(2026, 9, 18));
+    final transactions = await service.loadTransactions();
+    expect(transactions, hasLength(1));
+    expect(transactions.single.type,
+        InvestmentTransactionType.openingPosition);
+    expect(transactions.single.transactionDate, DateTime(2026, 9, 17));
+
+    await service.saveAssetDailySnapshot(
+      saved,
+      exchangeRate: 1,
+      valueBrl: 4200,
+      costBrl: 4000,
+    );
+    final snapshots = await service.loadAssetDailySnapshots(saved.syncKey);
+    expect(snapshots, hasLength(1));
+    expect(snapshots.single.valueBrl, 4200);
 
     await db.close();
     await directory.delete(recursive: true);

@@ -3,6 +3,8 @@ name: Build e publicar OpenStock
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -44,22 +46,30 @@ jobs:
         run: flutter build apk --release
 
       - name: Nomear APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.2.0.apk
+        if: github.event_name != 'pull_request'
+        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.3.0.apk
 
       - name: Publicar release
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.0
+          tag_name: v1.3.0
           target_commitish: main
-          name: OpenStock 1.2.0
+          name: OpenStock 1.3.0
           body: |
-            Destaques diários e comparação da carteira com o CDI.
+            Rastreamento permanente da jornada de cada investimento.
 
             - Carteira B3 e Estados Unidos
             - Conversão USD/BRL
             - Resultado diário e acumulado
             - Rankings de maiores altas e maiores baixas do dia
             - Ordenação por variação percentual, com impacto em reais
+            - Posição inicial automática, sem apagar os dados existentes
+            - Livro de compras, vendas, dividendos e JCP
+            - Recálculo de quantidade e preço médio pelas operações
+            - Registro diário individual de cada ativo
+            - Proventos e resultados realizados por ativo
+            - Sincronização das operações e snapshots pelo Turso
             - Comparação normalizada de vários ativos
             - Comparação da rentabilidade da carteira com o CDI
             - Suporte a CDB, LCI, LCA e outros títulos de renda fixa
@@ -69,6 +79,6 @@ jobs:
             - Sincronização Turso opcional e funcionamento offline
             - Migração não destrutiva dos dados existentes
 
-            Baixe `OpenStock-v1.2.0.apk` abaixo e instale no Android.
-          files: OpenStock-v1.2.0.apk
+            Baixe `OpenStock-v1.3.0.apk` abaixo e instale no Android.
+          files: OpenStock-v1.3.0.apk
           fail_on_unmatched_files: true

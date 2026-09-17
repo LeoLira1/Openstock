@@ -211,7 +211,7 @@ flutter build apk --release
 ```
 
 O workflow `release.yml` analisa, testa, gera o APK e publica automaticamente a
-release `v1.1.0` após a integração das alterações na branch `main`.
+release versionada após a integração das alterações na branch `main`.
 
 ## Licença e atribuição
 

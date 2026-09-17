@@ -22,8 +22,10 @@ class SyncService {
     var downloaded = 0;
 
     uploaded += await _pushAssets();
+    uploaded += await _pushTransactions();
     uploaded += await _pushHistory();
     uploaded += await _pushSnapshots();
+    uploaded += await _pushAssetDailySnapshots();
 
     final remoteAssets = await _turso.execute(TursoStatement(
       'SELECT * FROM openstock_assets WHERE updated_at > ? ORDER BY updated_at',
@@ -31,6 +33,16 @@ class SyncService {
     ));
     for (final row in remoteAssets) {
       await _database.applyRemoteAsset(row);
+      downloaded++;
+    }
+
+    final remoteTransactions = await _turso.execute(TursoStatement(
+      'SELECT * FROM openstock_transactions '
+      'WHERE updated_at > ? ORDER BY updated_at',
+      [lastSync],
+    ));
+    for (final row in remoteTransactions) {
+      await _database.applyRemoteTransaction(row);
       downloaded++;
     }
 
@@ -43,6 +55,17 @@ class SyncService {
     ));
     for (final row in remoteSnapshots) {
       await _database.applyRemoteSnapshot(row);
+      downloaded++;
+    }
+
+
+    final remoteAssetSnapshots = await _turso.execute(TursoStatement(
+      'SELECT * FROM openstock_asset_daily_snapshots '
+      'WHERE updated_at > ? ORDER BY updated_at',
+      [lastSync],
+    ));
+    for (final row in remoteAssetSnapshots) {
+      await _database.applyRemoteAssetDailySnapshot(row);
       downloaded++;
     }
 
@@ -96,6 +119,38 @@ class SyncService {
           updated_at TEXT NOT NULL
         )
       '''),
+      TursoStatement('''
+        CREATE TABLE IF NOT EXISTS openstock_transactions(
+          id TEXT PRIMARY KEY,
+          asset_key TEXT NOT NULL,
+          type TEXT NOT NULL,
+          quantity REAL NOT NULL,
+          price REAL NOT NULL,
+          exchange_rate REAL NOT NULL,
+          fees REAL NOT NULL DEFAULT 0,
+          cash_value REAL NOT NULL DEFAULT 0,
+          transaction_date TEXT NOT NULL,
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          deleted_at TEXT
+        )
+      '''),
+      TursoStatement('''
+        CREATE TABLE IF NOT EXISTS openstock_asset_daily_snapshots(
+          asset_key TEXT NOT NULL,
+          snapshot_date TEXT NOT NULL,
+          quantity REAL NOT NULL,
+          average_price REAL NOT NULL,
+          exchange_rate REAL NOT NULL,
+          current_price REAL NOT NULL,
+          value_brl REAL NOT NULL,
+          cost_brl REAL NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(asset_key, snapshot_date)
+        )
+      '''),
       TursoStatement('''CREATE INDEX IF NOT EXISTS idx_openstock_assets_updated
         ON openstock_assets(updated_at)'''),
       TursoStatement('''CREATE INDEX IF NOT EXISTS idx_openstock_history_updated
@@ -103,6 +158,12 @@ class SyncService {
       TursoStatement(
           '''CREATE INDEX IF NOT EXISTS idx_openstock_snapshots_updated
         ON openstock_portfolio_snapshots(updated_at)'''),
+      TursoStatement(
+          '''CREATE INDEX IF NOT EXISTS idx_openstock_transactions_updated
+        ON openstock_transactions(updated_at)'''),
+      TursoStatement(
+          '''CREATE INDEX IF NOT EXISTS idx_openstock_asset_snapshots_updated
+        ON openstock_asset_daily_snapshots(updated_at)'''),
     ]);
   }
 
@@ -259,6 +320,47 @@ class SyncService {
     return rows.length;
   }
 
+  Future<int> _pushTransactions() async {
+    final rows = await _database.unsyncedRows('transactions');
+    if (rows.isEmpty) return 0;
+    final statements = rows
+        .map((row) => TursoStatement('''
+          INSERT INTO openstock_transactions(
+            id, asset_key, type, quantity, price, exchange_rate, fees,
+            cash_value, transaction_date, notes, created_at, updated_at,
+            deleted_at
+          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            asset_key=excluded.asset_key, type=excluded.type,
+            quantity=excluded.quantity, price=excluded.price,
+            exchange_rate=excluded.exchange_rate, fees=excluded.fees,
+            cash_value=excluded.cash_value,
+            transaction_date=excluded.transaction_date, notes=excluded.notes,
+            updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
+          WHERE excluded.updated_at > openstock_transactions.updated_at
+        ''', [
+              row['id'],
+              row['asset_key'],
+              row['type'],
+              row['quantity'],
+              row['price'],
+              row['exchange_rate'],
+              row['fees'],
+              row['cash_value'],
+              row['transaction_date'],
+              row['notes'],
+              row['created_at'],
+              row['updated_at'],
+              row['deleted_at'],
+            ]))
+        .toList();
+    await _executeChunked(statements);
+    for (final row in rows) {
+      await _database.markRowsSynced('transactions', 'id = ?', [row['id']]);
+    }
+    return rows.length;
+  }
+
   Future<int> _pushSnapshots() async {
     final rows = await _database.unsyncedRows('portfolio_snapshots');
     if (rows.isEmpty) return 0;
@@ -283,6 +385,48 @@ class SyncService {
     for (final row in rows) {
       await _database.markRowsSynced(
           'portfolio_snapshots', 'snapshot_date = ?', [row['snapshot_date']]);
+    }
+    return rows.length;
+  }
+
+  Future<int> _pushAssetDailySnapshots() async {
+    final rows = await _database.unsyncedRows('asset_daily_snapshots');
+    if (rows.isEmpty) return 0;
+    final statements = rows
+        .map((row) => TursoStatement('''
+          INSERT INTO openstock_asset_daily_snapshots(
+            asset_key, snapshot_date, quantity, average_price, exchange_rate,
+            current_price, value_brl, cost_brl, created_at, updated_at
+          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(asset_key, snapshot_date) DO UPDATE SET
+            quantity=excluded.quantity,
+            average_price=excluded.average_price,
+            exchange_rate=excluded.exchange_rate,
+            current_price=excluded.current_price,
+            value_brl=excluded.value_brl, cost_brl=excluded.cost_brl,
+            updated_at=excluded.updated_at
+          WHERE excluded.updated_at >
+            openstock_asset_daily_snapshots.updated_at
+        ''', [
+              row['asset_key'],
+              row['snapshot_date'],
+              row['quantity'],
+              row['average_price'],
+              row['exchange_rate'],
+              row['current_price'],
+              row['value_brl'],
+              row['cost_brl'],
+              row['created_at'],
+              row['updated_at'],
+            ]))
+        .toList();
+    await _executeChunked(statements);
+    for (final row in rows) {
+      await _database.markRowsSynced(
+        'asset_daily_snapshots',
+        'asset_key = ? AND snapshot_date = ?',
+        [row['asset_key'], row['snapshot_date']],
+      );
     }
     return rows.length;
   }
