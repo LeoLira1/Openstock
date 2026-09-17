@@ -111,6 +111,31 @@ class PortfolioController extends ChangeNotifier {
     return previous == 0 ? 0 : assetDayResult(asset) / previous * 100;
   }
 
+  /// Ativos que subiram no dia, da maior para a menor alta percentual.
+  ///
+  /// O impacto em reais continua disponível em [assetDayResult], mas o ranking
+  /// percentual evita que apenas as maiores posições dominem a lista.
+  List<InvestmentAsset> get dayGainers {
+    final gainers = assets
+        .where((asset) => assetDayPercent(asset) > 0)
+        .toList(growable: false);
+    return [...gainers]
+      ..sort(
+        (a, b) => assetDayPercent(b).compareTo(assetDayPercent(a)),
+      );
+  }
+
+  /// Ativos que caíram no dia, da maior para a menor baixa percentual.
+  List<InvestmentAsset> get dayLosers {
+    final losers = assets
+        .where((asset) => assetDayPercent(asset) < 0)
+        .toList(growable: false);
+    return [...losers]
+      ..sort(
+        (a, b) => assetDayPercent(a).compareTo(assetDayPercent(b)),
+      );
+  }
+
   double assetTotalResult(InvestmentAsset asset) =>
       currentValue(asset) - costValue(asset);
   double assetTotalPercent(InvestmentAsset asset) {
