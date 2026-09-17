@@ -368,10 +368,32 @@ class DatabaseService {
     required double valueBrl,
     required double costBrl,
   }) async {
+    final now = DateTime.now().toUtc();
+    await saveAssetDailySnapshotAt(
+      assetKey: asset.syncKey,
+      date: now.toLocal(),
+      quantity: asset.quantity,
+      averagePrice: asset.averagePrice,
+      exchangeRate: exchangeRate,
+      currentPrice: asset.currentPrice ?? asset.averagePrice,
+      valueBrl: valueBrl,
+      costBrl: costBrl,
+    );
+  }
+
+  Future<void> saveAssetDailySnapshotAt({
+    required String assetKey,
+    required DateTime date,
+    required double quantity,
+    required double averagePrice,
+    required double exchangeRate,
+    required double currentPrice,
+    required double valueBrl,
+    required double costBrl,
+  }) async {
     final db = await database;
     final now = DateTime.now().toUtc();
-    final day = dateKey(now.toLocal());
-    final price = asset.currentPrice ?? asset.averagePrice;
+    final day = dateKey(date);
     await db.rawInsert('''
       INSERT INTO asset_daily_snapshots(
         asset_key, snapshot_date, quantity, average_price, exchange_rate,
@@ -387,12 +409,12 @@ class DatabaseService {
         updated_at = excluded.updated_at,
         sync_status = 0
     ''', [
-      asset.syncKey,
+      assetKey,
       day,
-      asset.quantity,
-      asset.averagePrice,
+      quantity,
+      averagePrice,
       exchangeRate,
-      price,
+      currentPrice,
       valueBrl,
       costBrl,
       now.toIso8601String(),
@@ -401,13 +423,24 @@ class DatabaseService {
   }
 
   Future<List<AssetDailySnapshot>> loadAssetDailySnapshots(
-    String assetKey,
-  ) async {
+    String assetKey, {
+    DateTime? from,
+    DateTime? to,
+  }) async {
     final db = await database;
+    final conditions = <String>[
+      'asset_key = ?',
+      if (from != null) 'snapshot_date >= ?',
+      if (to != null) 'snapshot_date <= ?',
+    ];
     final rows = await db.query(
       'asset_daily_snapshots',
-      where: 'asset_key = ?',
-      whereArgs: [assetKey],
+      where: conditions.join(' AND '),
+      whereArgs: [
+        assetKey,
+        if (from != null) dateKey(from),
+        if (to != null) dateKey(to),
+      ],
       orderBy: 'snapshot_date',
     );
     return rows
@@ -528,9 +561,18 @@ class DatabaseService {
   }
 
   Future<void> saveSnapshot(double total, double cost) async {
+    final now = DateTime.now().toUtc();
+    await savePortfolioSnapshotAt(now.toLocal(), total, cost);
+  }
+
+  Future<void> savePortfolioSnapshotAt(
+    DateTime snapshotDate,
+    double total,
+    double cost,
+  ) async {
     final db = await database;
     final now = DateTime.now().toUtc();
-    final date = dateKey(now.toLocal());
+    final date = dateKey(snapshotDate);
     await db.rawInsert('''
       INSERT INTO portfolio_snapshots(
         snapshot_date, total_brl, cost_brl, created_at, updated_at, sync_status
@@ -545,13 +587,23 @@ class DatabaseService {
 
   Future<List<PortfolioSnapshot>> loadPortfolioSnapshots({
     DateTime? from,
+    DateTime? to,
   }) async {
     final db = await database;
+    final conditions = <String>[
+      if (from != null) 'snapshot_date >= ?',
+      if (to != null) 'snapshot_date <= ?',
+    ];
     final rows = await db.query(
       'portfolio_snapshots',
       columns: ['snapshot_date', 'total_brl', 'cost_brl', 'updated_at'],
-      where: from == null ? null : 'snapshot_date >= ?',
-      whereArgs: from == null ? null : [dateKey(from)],
+      where: conditions.isEmpty ? null : conditions.join(' AND '),
+      whereArgs: conditions.isEmpty
+          ? null
+          : [
+              if (from != null) dateKey(from),
+              if (to != null) dateKey(to),
+            ],
       orderBy: 'snapshot_date',
     );
     return rows

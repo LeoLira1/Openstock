@@ -47,17 +47,17 @@ jobs:
 
       - name: Nomear APK
         if: github.event_name != 'pull_request'
-        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.3.0.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.4.0.apk
 
       - name: Publicar release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3.0
+          tag_name: v1.4.0
           target_commitish: main
-          name: OpenStock 1.3.0
+          name: OpenStock 1.4.0
           body: |
-            Rastreamento permanente da jornada de cada investimento.
+            Inteligência da carteira, relatório anual e comparação justa com o CDI.
 
             - Carteira B3 e Estados Unidos
             - Conversão USD/BRL
@@ -70,6 +70,11 @@ jobs:
             - Registro diário individual de cada ativo
             - Proventos e resultados realizados por ativo
             - Sincronização das operações e snapshots pelo Turso
+            - Nova área de Inteligência e relatório anual
+            - Lucro real separado de compras, vendas e aportes
+            - Tempo atual e maior sequência no prejuízo por ativo
+            - Rentabilidade de cada ativo contra o CDI no mesmo período
+            - Reconstrução de dias ausentes com fechamentos e câmbio históricos
             - Comparação normalizada de vários ativos
             - Comparação da rentabilidade da carteira com o CDI
             - Suporte a CDB, LCI, LCA e outros títulos de renda fixa
@@ -79,6 +84,6 @@ jobs:
             - Sincronização Turso opcional e funcionamento offline
             - Migração não destrutiva dos dados existentes
 
-            Baixe `OpenStock-v1.3.0.apk` abaixo e instale no Android.
-          files: OpenStock-v1.3.0.apk
+            Baixe `OpenStock-v1.4.0.apk` abaixo e instale no Android.
+          files: OpenStock-v1.4.0.apk
           fail_on_unmatched_files: true
