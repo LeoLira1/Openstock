@@ -11,6 +11,7 @@ ETFs e BDRs da B3 e ativos negociados nos Estados Unidos.
 - histórico diário persistente por ativo, com cache local;
 - comparação simultânea entre ativos e a carteira em `1M`, `3M`, `6M`, `1A`,
   `5A` e `Máx`;
+- comparação da carteira com o CDI, com rentabilidade sem o efeito dos aportes;
 - modo comparativo normalizado em 0% e modo de preço nominal;
 - detalhes do ativo, linha do preço médio e visão relativa ao preço médio;
 - sincronização opcional por Turso, mantendo SQLite como cache offline;
@@ -31,6 +32,35 @@ Não há interpolação de fins de semana, feriados ou pregões ausentes. Ao toc
 arrastar no gráfico, a data é ajustada a um fechamento real e cada série mostra
 o último fechamento válido naquela data. A série da carteira usa exclusivamente
 os snapshots diários reais; o aplicativo não cria patrimônio retroativo.
+
+## Carteira contra o CDI
+
+A série **CDI** usa a taxa diária publicada pelo Banco Central (série 12 do SGS,
+em % ao dia útil). O aplicativo guarda as taxas como vieram, em
+`cdi_daily_rates`, e acumula o índice na leitura:
+
+```text
+índice_do_dia = índice_anterior * (1 + taxa_do_dia / 100)
+```
+
+Como o índice é recalculado a cada janela, trocar o período nunca deixa dois
+trechos do gráfico com bases diferentes. Dias sem divulgação não são preenchidos.
+
+O cartão **Carteira × CDI** mede as duas séries entre as mesmas datas — a janela
+em que ambas existem — e a rentabilidade da carteira é ponderada no tempo:
+
+```text
+retorno_do_intervalo = patrimônio_final / (patrimônio_inicial + aporte) - 1
+```
+
+O aporte de cada intervalo é a variação do valor aplicado entre dois snapshots,
+então depositar dinheiro não aparece como valorização e sacar não aparece como
+prejuízo. O cartão mostra a diferença em pontos percentuais e quanto a carteira
+rendeu em relação ao CDI. Sem dois snapshots reais no período não há comparação:
+nenhum trecho é extrapolado para preencher o número.
+
+O CDI é um índice acumulado, sem preço em reais, então ele aparece apenas no
+modo **Desempenho %**.
 
 No modo **Preço**, ativos em BRL e USD mantêm sua moeda de negociação. Para
 comparação neutra de moeda, use **Desempenho %**. A linha da carteira permanece

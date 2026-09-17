@@ -4,7 +4,7 @@ import 'package:sqflite/sqflite.dart';
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
 
-const databaseVersion = 3;
+const databaseVersion = 4;
 
 class DatabaseService {
   DatabaseService._();
@@ -131,6 +131,13 @@ class DatabaseService {
         period TEXT NOT NULL,
         fetched_at TEXT NOT NULL,
         PRIMARY KEY(asset_key, period)
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cdi_daily_rates(
+        rate_date TEXT PRIMARY KEY,
+        daily_percent REAL NOT NULL,
+        updated_at TEXT NOT NULL
       )
     ''');
     await db.execute('''CREATE TABLE IF NOT EXISTS sync_state(
@@ -327,21 +334,91 @@ class DatabaseService {
     ''', [date, total, cost, now.toIso8601String(), now.toIso8601String()]);
   }
 
-  Future<List<PricePoint>> loadSnapshots({DateTime? from}) async {
+  Future<List<PortfolioSnapshot>> loadPortfolioSnapshots({
+    DateTime? from,
+  }) async {
     final db = await database;
     final rows = await db.query(
       'portfolio_snapshots',
-      columns: ['snapshot_date', 'total_brl'],
+      columns: ['snapshot_date', 'total_brl', 'cost_brl', 'updated_at'],
       where: from == null ? null : 'snapshot_date >= ?',
       whereArgs: from == null ? null : [dateKey(from)],
       orderBy: 'snapshot_date',
     );
     return rows
-        .map((row) => PricePoint(
-              DateTime.parse(row['snapshot_date'] as String),
-              (row['total_brl'] as num).toDouble(),
+        .map((row) => PortfolioSnapshot(
+              date: DateTime.parse(row['snapshot_date'] as String),
+              totalBrl: (row['total_brl'] as num).toDouble(),
+              costBrl: (row['cost_brl'] as num?)?.toDouble() ?? 0,
+              updatedAt: DateTime.parse(
+                (row['updated_at'] ?? row['snapshot_date']) as String,
+              ),
             ))
         .toList();
+  }
+
+  /// Guarda as taxas diárias do CDI como publicadas, sem acumular nada.
+  ///
+  /// O índice é recalculado na leitura, então trocar a janela do gráfico nunca
+  /// deixa dois trechos com bases diferentes.
+  Future<void> upsertCdiRates(List<CdiRate> rates) async {
+    if (rates.isEmpty) return;
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final rate in rates) {
+        batch.insert(
+          'cdi_daily_rates',
+          {
+            'rate_date': dateKey(rate.date),
+            'daily_percent': rate.dailyPercent,
+            'updated_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<List<CdiRate>> loadCdiRates({DateTime? from, DateTime? to}) async {
+    final db = await database;
+    final conditions = <String>[
+      if (from != null) 'rate_date >= ?',
+      if (to != null) 'rate_date <= ?',
+    ];
+    final rows = await db.query(
+      'cdi_daily_rates',
+      columns: ['rate_date', 'daily_percent'],
+      where: conditions.isEmpty ? null : conditions.join(' AND '),
+      whereArgs: conditions.isEmpty
+          ? null
+          : [
+              if (from != null) dateKey(from),
+              if (to != null) dateKey(to),
+            ],
+      orderBy: 'rate_date',
+    );
+    return rows
+        .map((row) => CdiRate(
+              date: DateTime.parse(row['rate_date'] as String),
+              dailyPercent: (row['daily_percent'] as num).toDouble(),
+            ))
+        .toList();
+  }
+
+  /// Primeira e última data de CDI já guardadas no aparelho.
+  Future<({DateTime oldest, DateTime newest})?> cdiCoverage() async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      'SELECT MIN(rate_date) AS oldest, MAX(rate_date) AS newest '
+      'FROM cdi_daily_rates',
+    );
+    final oldest = rows.first['oldest'] as String?;
+    final newest = rows.first['newest'] as String?;
+    if (oldest == null || newest == null) return null;
+    return (oldest: DateTime.parse(oldest), newest: DateTime.parse(newest));
   }
 
   Future<void> saveDollarQuote(MarketQuote quote) async {

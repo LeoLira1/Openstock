@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
+import '../services/cdi_service.dart';
 import '../services/database_service.dart';
 import '../services/quote_service.dart';
 import '../services/settings_service.dart';
@@ -12,20 +13,28 @@ class PortfolioController extends ChangeNotifier {
   PortfolioController({
     DatabaseService? database,
     QuoteService? quotes,
+    CdiService? cdi,
     SettingsService? settings,
     TursoService? turso,
   })  : _database = database ?? DatabaseService.instance,
         _quotes = quotes ?? QuoteService(),
+        _cdi = cdi ?? CdiService(),
         _settings = settings ?? const SettingsService(),
         _turso = turso ?? TursoService();
 
   final DatabaseService _database;
   final QuoteService _quotes;
+  final CdiService _cdi;
   final SettingsService _settings;
   final TursoService _turso;
 
   List<InvestmentAsset> assets = [];
   List<PricePoint> portfolioHistory = [];
+  List<PortfolioSnapshot> portfolioSnapshots = [];
+  List<CdiRate> cdiRates = [];
+  List<PricePoint> cdiHistory = [];
+  bool cdiLoading = false;
+  String? cdiError;
   final Map<String, List<PricePoint>> assetHistories = {};
   final Set<String> historyLoading = {};
   final Map<String, String> historyErrors = {};
@@ -87,6 +96,13 @@ class PortfolioController extends ChangeNotifier {
   double get totalResult => totalValue - totalCost;
   double get totalPercent => totalCost == 0 ? 0 : totalResult / totalCost * 100;
 
+  /// Carteira contra o CDI na janela carregada na tela de comparação.
+  ///
+  /// A rentabilidade da carteira é medida sem os aportes, então o número é
+  /// comparável ao CDI acumulado entre as mesmas datas.
+  CdiComparison? get cdiComparison =>
+      compareToCdi(snapshots: portfolioSnapshots, rates: cdiRates);
+
   double assetDayResult(InvestmentAsset asset) =>
       currentValue(asset) - previousValue(asset);
   double assetDayPercent(InvestmentAsset asset) {
@@ -129,7 +145,13 @@ class PortfolioController extends ChangeNotifier {
   Future<void> _reloadLocalData() async {
     assets = await _database.loadAssets();
     dollarQuote = await _database.loadDollarQuote();
-    portfolioHistory = await _database.loadSnapshots();
+    await _reloadSnapshots();
+  }
+
+  Future<void> _reloadSnapshots({DateTime? from}) async {
+    portfolioSnapshots = await _database.loadPortfolioSnapshots(from: from);
+    portfolioHistory =
+        portfolioSnapshots.map((snapshot) => snapshot.toPoint()).toList();
   }
 
   Future<String?> saveFinnhubKey(String key) async {
@@ -276,7 +298,7 @@ class PortfolioController extends ChangeNotifier {
 
     if (totalValue > 0) {
       await _database.saveSnapshot(totalValue, totalCost);
-      portfolioHistory = await _database.loadSnapshots();
+      await _reloadSnapshots();
     }
     lastRefresh = DateTime.now();
     if (errors.isNotEmpty) {
@@ -343,16 +365,72 @@ class PortfolioController extends ChangeNotifier {
     }
   }
 
+  /// Taxas diárias do CDI para a janela pedida, do cache e do Banco Central.
+  ///
+  /// Só as taxas realmente publicadas entram na série; nenhum dia sem
+  /// divulgação é preenchido para emendar o gráfico.
+  Future<void> ensureCdi(HistoryPeriod period, {bool force = false}) async {
+    if (cdiLoading) return;
+    cdiLoading = true;
+    cdiError = null;
+    notifyListeners();
+    final from = period.startFrom(DateTime.now()) ?? _earliestKnownDate();
+    try {
+      await _reloadCdi(from);
+      final fresh = await _database.historyFetchIsFresh(cdiSeriesKey, period);
+      if (!force && fresh && cdiRates.isNotEmpty) return;
+
+      final coverage = await _database.cdiCoverage();
+      // Só busca desde o começo da janela quando o cache não a cobre.
+      final covered = coverage != null &&
+          !coverage.oldest.isAfter(from.add(const Duration(days: 7)));
+      final start = covered ? coverage.newest : from;
+      final fetched = await _cdi.fetchDailyRates(start: start);
+      await _database.upsertCdiRates(fetched);
+      await _database.markHistoryFetched(cdiSeriesKey, period);
+      await _reloadCdi(from);
+      if (cdiRates.isEmpty) {
+        cdiError = 'O Banco Central não publicou CDI para esse período.';
+      }
+    } catch (error) {
+      cdiError = 'CDI indisponível: $error';
+    } finally {
+      cdiLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _reloadCdi(DateTime from) async {
+    cdiRates = await _database.loadCdiRates(from: from);
+    cdiHistory = accumulateCdi(cdiRates);
+  }
+
+  DateTime _earliestKnownDate() {
+    final candidates = <DateTime>[
+      if (portfolioHistory.isNotEmpty) portfolioHistory.first.date,
+      for (final points in assetHistories.values)
+        if (points.isNotEmpty) points.first.date,
+    ];
+    if (candidates.isEmpty) {
+      final now = DateTime.now();
+      return DateTime(now.year - 5, now.month, now.day);
+    }
+    return candidates.reduce((a, b) => a.isBefore(b) ? a : b);
+  }
+
   Future<void> loadComparison(
     Iterable<InvestmentAsset> selected,
     HistoryPeriod period,
   ) async {
-    await Future.wait(selected.map(
-      (asset) => ensureHistory(asset, period, syncAfter: false),
-    ));
-    portfolioHistory = await _database.loadSnapshots(
-      from: period.startFrom(DateTime.now()),
-    );
+    // Os snapshots vêm primeiro: no período máximo eles definem desde quando o
+    // CDI precisa ser buscado.
+    await _reloadSnapshots(from: period.startFrom(DateTime.now()));
+    await Future.wait([
+      ...selected.map(
+        (asset) => ensureHistory(asset, period, syncAfter: false),
+      ),
+      ensureCdi(period),
+    ]);
     notifyListeners();
     if (tursoConfigured && _historyDirtyForSync) {
       await synchronize(silent: true);
