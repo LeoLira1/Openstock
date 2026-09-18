@@ -13,3 +13,9 @@ android/key.properties
 .idea/
 *.iml
 
+# Segredos: as chaves do aplicativo ficam no armazenamento seguro do
+# aparelho, nunca em arquivo versionado.
+.env
+.env.*
+*.env
+secrets.json
