@@ -48,19 +48,23 @@ jobs:
 
       - name: Nomear APK
         if: github.event_name != 'pull_request'
-        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.5.0.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.6.0.apk
 
       - name: Preparar release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.0
+          tag_name: v1.6.0
           target_commitish: main
-          name: OpenStock 1.5.0
+          name: OpenStock 1.6.0
           body: |
-            Rankings diários por percentual ou impacto em reais, além da inteligência da carteira e comparação com o CDI.
+            Correção da data dos pregões e dos registros diários da carteira.
 
             - Carteira B3 e Estados Unidos
+            - Resultado diário zerado enquanto o mercado ainda não publicou cotação do novo pregão
+            - Snapshots vinculados à data real da cotação, sem criar fechamento pela data do celular
+            - Câmbio histórico alinhado ao pregão de cada ativo internacional
+            - Relatório identifica registros de mercado sem chamar atualização parcial de fechamento
             - Conversão USD/BRL
             - Resultado diário e acumulado
             - Rankings de maiores altas e maiores baixas do dia
@@ -86,7 +90,7 @@ jobs:
             - Sincronização Turso opcional e funcionamento offline
             - Migração não destrutiva dos dados existentes
 
-            Baixe `OpenStock-v1.5.0.apk` abaixo e instale no Android.
+            Baixe `OpenStock-v1.6.0.apk` abaixo e instale no Android.
           draft: true
 
       - name: Enviar APK e publicar release
@@ -95,12 +99,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq '.[] | select(.tag_name == "v1.5.0") | .id' | head -n 1)"
+              --jq '.[] | select(.tag_name == "v1.6.0") | .id' | head -n 1)"
           test -n "$release_id"
 
           delete_existing_asset() {
             asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
-              --jq '.[] | select(.name == "OpenStock-v1.5.0.apk") | .id' | head -n 1)"
+              --jq '.[] | select(.name == "OpenStock-v1.6.0.apk") | .id' | head -n 1)"
             if [ -n "$asset_id" ]; then
               gh api --method DELETE \
                 "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
@@ -114,9 +118,9 @@ jobs:
               --connect-timeout 30 --max-time 900 \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Content-Type: application/vnd.android.package-archive" \
-              --data-binary @OpenStock-v1.5.0.apk \
+              --data-binary @OpenStock-v1.6.0.apk \
               --output upload-response.json \
-              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=OpenStock-v1.5.0.apk"; then
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=OpenStock-v1.6.0.apk"; then
               uploaded=true
               break
             fi

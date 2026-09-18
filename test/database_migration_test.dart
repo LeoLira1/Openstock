@@ -318,4 +318,66 @@ void main() {
     await db.close();
     await directory.delete(recursive: true);
   });
+
+  test('patrimônio diário usa o último registro de cada ativo até o pregão',
+      () async {
+    final directory =
+        await Directory.systemTemp.createTemp('openstock_portfolio_day_');
+    final db = await databaseFactoryFfi.openDatabase(
+      '${directory.path}/portfolio-day.db',
+      options: OpenDatabaseOptions(
+        version: databaseVersion,
+        onCreate: DatabaseService.createSchema,
+      ),
+    );
+    final service = DatabaseService.forTesting(db);
+    final br = await service.saveAsset(const InvestmentAsset(
+      stableKey: 'b3:PRIO3',
+      symbol: 'PRIO3',
+      name: 'PRIO',
+      market: AssetMarket.b3,
+      currency: AssetCurrency.brl,
+      quantity: 10,
+      averagePrice: 40,
+    ));
+    final us = await service.saveAsset(const InvestmentAsset(
+      stableKey: 'usa:AMD',
+      symbol: 'AMD',
+      name: 'AMD',
+      market: AssetMarket.usa,
+      currency: AssetCurrency.usd,
+      quantity: 1,
+      averagePrice: 100,
+      averageExchangeRate: 5,
+    ));
+    await service.saveAssetDailySnapshotAt(
+      assetKey: br.syncKey,
+      date: DateTime(2026, 9, 18),
+      quantity: 10,
+      averagePrice: 40,
+      exchangeRate: 1,
+      currentPrice: 45,
+      valueBrl: 450,
+      costBrl: 400,
+    );
+    await service.saveAssetDailySnapshotAt(
+      assetKey: us.syncKey,
+      date: DateTime(2026, 9, 17),
+      quantity: 1,
+      averagePrice: 100,
+      exchangeRate: 5.1,
+      currentPrice: 110,
+      valueBrl: 561,
+      costBrl: 500,
+    );
+
+    final snapshot =
+        await service.buildPortfolioSnapshotAt(DateTime(2026, 9, 18));
+
+    expect(snapshot?.totalBrl, 1011);
+    expect(snapshot?.costBrl, 900);
+
+    await db.close();
+    await directory.delete(recursive: true);
+  });
 }

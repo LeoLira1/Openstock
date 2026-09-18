@@ -214,10 +214,18 @@ class MarketQuote {
     required this.previousClose,
     required this.history,
     this.historySource = 'unknown',
+    this.priceDate,
   });
 
   final double current;
   final double previousClose;
   final List<PricePoint> history;
   final String historySource;
+
+  /// Data do pregão ao qual [current] pertence.
+  ///
+  /// Ela é deliberadamente separada do horário em que o aplicativo fez a
+  /// consulta. Antes da abertura, por exemplo, o preço atual ainda pertence ao
+  /// pregão anterior e não pode criar um snapshot para o novo dia.
+  final DateTime? priceDate;
 }

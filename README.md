@@ -20,6 +20,12 @@ ETFs e BDRs da B3 e ativos negociados nos Estados Unidos.
 - atualização manual, gesto de puxar para atualizar, edição, exclusão confirmada
   e preço manual de contingência.
 
+O resultado diário só começa quando o provedor publica uma cotação pertencente
+ao pregão atual. Antes da abertura, o último fechamento continua visível como
+patrimônio, mas não é repetido como ganho ou perda de um novo dia. Os registros
+de acompanhamento usam a data da própria cotação — nunca apenas a data do
+celular — e são atualizados durante o pregão até o fechamento ficar disponível.
+
 ## Comparar
 
 A aba **Comparar** aceita qualquer combinação dos ativos cadastrados e a série

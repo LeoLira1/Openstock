@@ -40,6 +40,7 @@ class PortfolioController extends ChangeNotifier {
   String? cdiError;
   final Map<String, List<PricePoint>> assetHistories = {};
   final Map<String, List<InvestmentTransaction>> transactionsByAsset = {};
+  final Map<String, DateTime> quoteDates = {};
   final Map<String, AssetTrackingSummary> assetTrackingSummaries = {};
   AnnualTrackingReport? annualTrackingReport;
   bool intelligenceLoading = false;
@@ -72,6 +73,28 @@ class PortfolioController extends ChangeNotifier {
   double get usdBrl => dollarQuote?.current ?? 0;
   double get previousUsdBrl => dollarQuote?.previousClose ?? usdBrl;
 
+  bool _isToday(DateTime? value) {
+    if (value == null) return false;
+    final local = value.toLocal();
+    final now = DateTime.now();
+    return local.year == now.year &&
+        local.month == now.month &&
+        local.day == now.day;
+  }
+
+  bool quoteIsFromToday(InvestmentAsset asset) =>
+      _isToday(quoteDates[asset.syncKey]);
+
+  bool get hasMarketQuoteToday => assets.any(
+        (asset) =>
+            (asset.market == AssetMarket.b3 ||
+                asset.market == AssetMarket.usa) &&
+            quoteIsFromToday(asset),
+      );
+
+  String get dayChangeLabel =>
+      hasMarketQuoteToday ? 'hoje' : 'mercados fechados';
+
   double currentValue(InvestmentAsset asset) {
     final price = asset.currentPrice ?? asset.averagePrice;
     final fx = asset.currency == AssetCurrency.usd
@@ -81,6 +104,10 @@ class PortfolioController extends ChangeNotifier {
   }
 
   double previousValue(InvestmentAsset asset) {
+    if ((asset.market == AssetMarket.b3 || asset.market == AssetMarket.usa) &&
+        !quoteIsFromToday(asset)) {
+      return currentValue(asset);
+    }
     final price =
         asset.previousClose ?? asset.currentPrice ?? asset.averagePrice;
     final fx = asset.currency == AssetCurrency.usd
@@ -387,6 +414,9 @@ class PortfolioController extends ChangeNotifier {
       if (asset.market == AssetMarket.manual || asset.isFixedIncome) continue;
       try {
         final quote = await _quotes.fetch(asset);
+        if (quote.priceDate != null) {
+          quoteDates[asset.syncKey] = quote.priceDate!;
+        }
         if (asset.id != null) await _database.saveQuote(asset.id!, quote);
         await _database.upsertHistory(
           asset,
@@ -406,17 +436,53 @@ class PortfolioController extends ChangeNotifier {
     if (cdiError != null) errors.add('CDI');
 
     if (totalValue > 0) {
-      await _database.saveSnapshot(totalValue, totalCost);
+      final snapshotDates = <DateTime>{};
       for (final asset in assets) {
+        final snapshotDate = _snapshotDateFor(asset);
+        if (snapshotDate == null) continue;
         final exchangeRate = asset.currency == AssetCurrency.usd
-            ? (usdBrl > 0 ? usdBrl : asset.averageExchangeRate)
+            ? _exchangeRateForDate(snapshotDate, asset.averageExchangeRate)
             : 1.0;
-        await _database.saveAssetDailySnapshot(
-          asset,
+        final currentPrice = asset.currentPrice ?? asset.averagePrice;
+        await _database.saveAssetDailySnapshotAt(
+          assetKey: asset.syncKey,
+          date: snapshotDate,
+          quantity: asset.quantity,
+          averagePrice: asset.averagePrice,
           exchangeRate: exchangeRate,
-          valueBrl: currentValue(asset),
+          currentPrice: currentPrice,
+          valueBrl: currentPrice * asset.quantity * exchangeRate,
           costBrl: costValue(asset),
         );
+        snapshotDates.add(DateTime(
+          snapshotDate.year,
+          snapshotDate.month,
+          snapshotDate.day,
+        ));
+
+        // A versão 1.5 podia criar o registro do novo dia antes da abertura.
+        // Se essa linha já existe, ela é neutralizada com a última cotação real
+        // e depois será naturalmente sobrescrita quando o pregão de hoje abrir.
+        final today = DateTime.now();
+        if ((asset.market == AssetMarket.b3 ||
+                asset.market == AssetMarket.usa) &&
+            !_sameDay(snapshotDate, today) &&
+            await _database.hasAssetDailySnapshotAt(asset.syncKey, today)) {
+          await _database.saveAssetDailySnapshotAt(
+            assetKey: asset.syncKey,
+            date: today,
+            quantity: asset.quantity,
+            averagePrice: asset.averagePrice,
+            exchangeRate: exchangeRate,
+            currentPrice: currentPrice,
+            valueBrl: currentPrice * asset.quantity * exchangeRate,
+            costBrl: costValue(asset),
+          );
+          snapshotDates.add(DateTime(today.year, today.month, today.day));
+        }
+      }
+      for (final date in snapshotDates) {
+        await _database.buildPortfolioSnapshotAt(date);
       }
       await _reloadSnapshots();
       await _reloadLocalTrackingSummaries();
@@ -429,6 +495,33 @@ class PortfolioController extends ChangeNotifier {
     refreshing = false;
     notifyListeners();
     if (syncAfter && tursoConfigured) await synchronize(silent: true);
+  }
+
+  DateTime? _snapshotDateFor(InvestmentAsset asset) {
+    if (asset.market == AssetMarket.b3 || asset.market == AssetMarket.usa) {
+      return quoteDates[asset.syncKey];
+    }
+    if (asset.isFixedIncome) {
+      return cdiRates.isEmpty ? null : cdiRates.last.date;
+    }
+    return DateTime.now();
+  }
+
+  double _exchangeRateForDate(DateTime date, double fallback) {
+    final quote = dollarQuote;
+    if (quote == null) return fallback;
+    if (_sameDay(quote.priceDate, date)) return quote.current;
+    final point = pointOnOrBefore(quote.history, date);
+    return point?.value ?? fallback;
+  }
+
+  bool _sameDay(DateTime? a, DateTime b) {
+    if (a == null) return false;
+    final left = a.toLocal();
+    final right = b.toLocal();
+    return left.year == right.year &&
+        left.month == right.month &&
+        left.day == right.day;
   }
 
   Future<void> ensureHistory(

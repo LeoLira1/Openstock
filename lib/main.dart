@@ -266,7 +266,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
                         percent: controller.dayPercent,
                       ),
                       Text(
-                        'hoje',
+                        controller.dayChangeLabel,
                         style: TextStyle(color: positive ? _green : _red),
                       ),
                     ],

@@ -93,7 +93,7 @@ class _IntelligenceScreenState extends State<IntelligenceScreen> {
             const LinearProgressIndicator(minHeight: 3),
             const SizedBox(height: 8),
             const Text(
-              'Conferindo operações, fechamentos, câmbio e CDI…',
+              'Conferindo operações, registros de mercado, câmbio e CDI…',
               style: TextStyle(color: _muted, fontSize: 12),
             ),
           ],
@@ -258,7 +258,7 @@ class _AssetJourneyCard extends StatelessWidget {
                                     fontWeight: FontWeight.w800)),
                             Text(
                               'Desde ${_date(data.start)} • '
-                              '${data.snapshotCount} fechamentos',
+                              '${data.snapshotCount} registros',
                               style: const TextStyle(
                                   color: _muted, fontSize: 11),
                             ),
@@ -337,7 +337,11 @@ final _brl =
 String _date(DateTime value) => DateFormat('dd/MM/yyyy').format(value);
 String _signedMoney(double value) =>
     '${value >= 0 ? '+' : '-'}${_brl.format(value.abs())}';
-String _percent(double value) =>
-    '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2).replaceAll('.', ',')}%';
-String _points(double value) =>
-    '${value >= 0 ? '+' : ''}${value.toStringAsFixed(2).replaceAll('.', ',')} p.p.';
+String _percent(double value) {
+  final clean = value.abs() < 0.005 ? 0.0 : value;
+  return '${clean >= 0 ? '+' : ''}${clean.toStringAsFixed(2).replaceAll('.', ',')}%';
+}
+String _points(double value) {
+  final clean = value.abs() < 0.005 ? 0.0 : value;
+  return '${clean >= 0 ? '+' : ''}${clean.toStringAsFixed(2).replaceAll('.', ',')} p.p.';
+}

@@ -33,6 +33,7 @@ class QuoteService {
               asset.previousClose ?? asset.currentPrice ?? asset.averagePrice,
           history: const [],
           historySource: 'manual',
+          priceDate: DateTime.now(),
         )),
       // Renda fixa não tem cotação: o valor vem do CDI publicado, calculado
       // no controlador. Aqui só devolvemos o último valor já apurado.
@@ -42,6 +43,7 @@ class QuoteService {
               asset.previousClose ?? asset.currentPrice ?? asset.principal,
           history: const [],
           historySource: 'cdi',
+          priceDate: DateTime.now(),
         )),
     };
   }
@@ -100,6 +102,7 @@ class QuoteService {
           previousClose: live.previousClose,
           history: history?.history ?? const [],
           historySource: history?.historySource ?? live.historySource,
+          priceDate: live.priceDate ?? history?.priceDate,
         );
       } catch (_) {
         // Mantém a cotação histórica pública quando a chave não tem acesso à B3.
@@ -132,6 +135,7 @@ class QuoteService {
         previousClose: live.previousClose,
         history: history?.history ?? const [],
         historySource: history?.historySource ?? live.historySource,
+        priceDate: live.priceDate ?? history?.priceDate,
       );
     } catch (_) {
       if (history != null) return history;
@@ -180,6 +184,7 @@ class QuoteService {
       previousClose: previous ?? current,
       history: const [],
       historySource: 'finnhub',
+      priceDate: _epochDate(data?['t']),
     );
   }
 
@@ -228,6 +233,8 @@ class QuoteService {
       ),
       history: history,
       historySource: 'brapi',
+      priceDate: _marketDate(data['regularMarketTime']) ??
+          (history.isEmpty ? null : history.last.date),
     );
   }
 
@@ -308,10 +315,23 @@ class QuoteService {
       previousClose: previous,
       history: history,
       historySource: 'yahoo',
+      priceDate: _epochDate(meta['regularMarketTime']) ??
+          (history.isEmpty ? null : history.last.date),
     );
   }
 
   double? _number(Object? value) => value is num ? value.toDouble() : null;
+
+  DateTime? _epochDate(Object? value) {
+    if (value is! num || value.toInt() <= 0) return null;
+    return DateTime.fromMillisecondsSinceEpoch(value.toInt() * 1000);
+  }
+
+  DateTime? _marketDate(Object? value) {
+    if (value is num) return _epochDate(value);
+    if (value is String) return DateTime.tryParse(value)?.toLocal();
+    return null;
+  }
 }
 
 /// Obtém o fechamento do pregão anterior a partir da série diária.
