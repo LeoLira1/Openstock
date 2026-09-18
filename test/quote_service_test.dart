@@ -560,24 +560,55 @@ void main() {
     expect(caminhos, ['lote', 'individual']);
   });
 
-  test('chave recusada no lote pausa a fonte inteira', () async {
-    final caminhos = <String>[];
+  test('qualquer recusa do lote preserva a consulta individual', () async {
+    for (final status in [401, 403, 429]) {
+      final caminhos = <String>[];
+      final service = QuoteService(client: MockClient((request) async {
+        if (request.url.host != 'brapi.dev') {
+          caminhos.add('yahoo');
+          return http.Response(_chartYahoo(), 200);
+        }
+        final tickers = request.url.path.replaceFirst('/api/quote/', '');
+        if (tickers.contains(',')) {
+          caminhos.add('lote');
+          return http.Response('{"error":"recusado"}', status);
+        }
+        caminhos.add('individual');
+        return http.Response(_quoteBrapi(), 200);
+      }));
+      service.configureBrapi('chave-brapi');
+
+      final lote = await service.fetchBrazilianBatch(['PRIO3', 'PETR4']);
+      final quote = await service.fetch(_prio3);
+
+      // Adivinhar o motivo da recusa foi o que manteve a carteira na consulta
+      // pública mesmo com a chave válida.
+      expect(lote, isEmpty, reason: 'status $status');
+      expect(quote.historySource, 'brapi', reason: 'status $status');
+      expect(quote.previousClose, 63.29, reason: 'status $status');
+      expect(caminhos, ['lote', 'individual'], reason: 'status $status');
+    }
+  });
+
+  test('o motivo da recusa do lote fica disponível para a tela', () async {
     final service = QuoteService(client: MockClient((request) async {
-      if (request.url.host != 'brapi.dev') {
-        caminhos.add('yahoo');
-        return http.Response(_chartYahoo(), 200);
-      }
-      caminhos.add('brapi');
-      return http.Response('{"error":"token inválido"}', 401);
+      return http.Response('{"error":"fora do plano"}', 403);
     }));
-    service.configureBrapi('chave-vencida');
+    service.configureBrapi('chave-brapi');
 
-    await service.fetchBrazilianBatch(['PRIO3', 'PETR4']);
-    await service.fetch(_prio3);
+    expect(
+      await service.motivoLoteIndisponivel(['PRIO3', 'PETR4']),
+      'HTTP 403',
+    );
+  });
 
-    // Sem chave válida a consulta individual também não passaria: insistir só
-    // gastaria uma ida de rede por ativo.
-    expect(caminhos, ['brapi', 'yahoo']);
+  test('lote aceito não produz motivo algum', () async {
+    final service = QuoteService(client: MockClient((request) async {
+      return http.Response(_loteBrapi(['PRIO3', 'PETR4']), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+
+    expect(await service.motivoLoteIndisponivel(['PRIO3', 'PETR4']), isNull);
   });
 }
 
