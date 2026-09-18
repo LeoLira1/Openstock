@@ -349,7 +349,13 @@ class PortfolioController extends ChangeNotifier {
     final key = _brapiKey;
     if (key == null || key.isEmpty) return 'Nenhuma chave foi configurada.';
     try {
-      final valid = await _quotes.validateBrapiToken(key);
+      final brasileiros = assets
+          .where((asset) => asset.market == AssetMarket.b3)
+          .toList(growable: false);
+      final valid = await _quotes.validateBrapiToken(
+        key,
+        symbol: brasileiros.isEmpty ? null : brasileiros.first.symbol,
+      );
       brapiValidated = valid;
       if (!valid) {
         brapiConnectionMessage = 'A brapi não confirmou essa chave.';
@@ -370,7 +376,8 @@ class PortfolioController extends ChangeNotifier {
       }
     } catch (error) {
       brapiValidated = false;
-      brapiConnectionMessage = error.toString();
+      brapiConnectionMessage = 'A brapi não aceitou a chave: $error. '
+          'Os ativos brasileiros seguem pela consulta pública.';
     }
     notifyListeners();
     return brapiConnectionMessage!;

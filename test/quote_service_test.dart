@@ -351,7 +351,7 @@ void main() {
     expect(quote.historySource, 'brapi');
   });
 
-  test('validação da chave brapi consulta um papel comum', () async {
+  test('validação da chave brapi consulta um papel que exige chave', () async {
     http.BaseRequest? consulta;
     final service = QuoteService(client: MockClient((request) async {
       consulta = request;
@@ -361,7 +361,8 @@ void main() {
     final valido = await service.validateBrapiToken('  chave-brapi  ');
 
     expect(valido, isTrue);
-    expect(consulta?.url.path, '/api/quote/PETR4');
+    // PETR4 responde sem token, então não diria nada sobre a chave.
+    expect(consulta?.url.path, '/api/quote/BBAS3');
     expect(consulta?.headers['Authorization'], 'Bearer chave-brapi');
   });
   test('a carteira brasileira cabe em uma requisição', () async {
@@ -609,6 +610,63 @@ void main() {
     service.configureBrapi('chave-brapi');
 
     expect(await service.motivoLoteIndisponivel(['PRIO3', 'PETR4']), isNull);
+  });
+  test('a chave é validada contra um papel que exige autenticação', () async {
+    final consultados = <String>[];
+    final service = QuoteService(client: MockClient((request) async {
+      final papel = request.url.path.replaceFirst('/api/quote/', '');
+      consultados.add(papel);
+      // PETR4 responde sem token nenhum; um papel comum responde 401.
+      if (papel == 'PETR4') return http.Response(_quoteBrapi(), 200);
+      return http.Response(
+        '{"error":true,"message":"Token inválido","code":"INVALID_TOKEN"}',
+        401,
+      );
+    }));
+
+    // Validar contra PETR4 aprovava qualquer chave, inclusive uma recusada.
+    await expectLater(
+      service.validateBrapiToken('chave-recusada', symbol: 'PRIO3'),
+      throwsA(isA<QuoteException>()),
+    );
+    expect(consultados, ['PRIO3']);
+  });
+
+  test('um papel de demonstração não serve para validar', () async {
+    final consultados = <String>[];
+    final service = QuoteService(client: MockClient((request) async {
+      consultados.add(request.url.path.replaceFirst('/api/quote/', ''));
+      return http.Response(_quoteBrapi(), 200);
+    }));
+
+    await service.validateBrapiToken('chave', symbol: 'PETR4');
+
+    // A carteira pode começar por um dos quatro papéis abertos: nesse caso a
+    // validação troca por outro que exija a chave.
+    expect(consultados, ['BBAS3']);
+  });
+
+  test('a recusa carrega o código devolvido pela brapi', () async {
+    final service = QuoteService(client: MockClient((request) async {
+      return http.Response(
+        '{"error":true,"message":"Token não fornecido","code":"MISSING_TOKEN"}',
+        401,
+      );
+    }));
+
+    // Sem esse código não dá para saber se a chave foi recusada ou se nem
+    // chegou a ser enviada.
+    expect(
+      await service.motivoLoteIndisponivel(['PRIO3', 'SLCE3']),
+      'HTTP 401',
+    );
+    try {
+      await service.validateBrapiToken('chave', symbol: 'PRIO3');
+      fail('deveria ter lançado');
+    } catch (error) {
+      expect(error.toString(), contains('MISSING_TOKEN'));
+      expect(error.toString(), contains('401'));
+    }
   });
 }
 

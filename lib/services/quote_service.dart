@@ -164,11 +164,28 @@ class QuoteService {
     }
   }
 
-  /// Confere se a chave responde por um papel comum da B3.
-  Future<bool> validateBrapiToken(String token) async {
-    final quote = await _fetchBrapi('PETR4', token: token.trim());
+  /// Papel usado para validar a chave quando a carteira não tem um da B3.
+  ///
+  /// PETR4, VALE3, ITUB4 e MGLU3 respondem sem token nenhum: validar a chave
+  /// contra um deles aprovava qualquer coisa, até uma chave recusada, e a tela
+  /// dizia "conectada" enquanto a carteira inteira era atendida por outra
+  /// fonte.
+  static const _papelQueExigeChave = 'BBAS3';
+
+  /// Confere se a chave responde por um papel que exige autenticação.
+  Future<bool> validateBrapiToken(String token, {String? symbol}) async {
+    final papel = symbol == null || normalizeB3Symbol(symbol).isEmpty
+        ? _papelQueExigeChave
+        : normalizeB3Symbol(symbol);
+    final quote = await _fetchBrapi(
+      _exigeChave(papel) ? papel : _papelQueExigeChave,
+      token: token.trim(),
+    );
     return quote.current > 0;
   }
+
+  static bool _exigeChave(String symbol) =>
+      !const {'PETR4', 'VALE3', 'ITUB4', 'MGLU3'}.contains(symbol);
 
   Future<MarketQuote> fetch(InvestmentAsset asset) {
     return switch (asset.market) {
@@ -409,8 +426,20 @@ class QuoteService {
       },
     ).timeout(_timeout);
     if (response.statusCode != 200) {
+      // A brapi separa "token não enviado" de "token recusado" no corpo, e é
+      // essa diferença que diz se o problema está na chave ou no aplicativo.
+      var detalhe = '';
+      try {
+        final corpo = jsonDecode(response.body) as Map<String, dynamic>;
+        final codigo = corpo['code']?.toString() ?? corpo['message']?.toString();
+        if (codigo != null && codigo.trim().isNotEmpty) {
+          detalhe = ' ${codigo.trim()}';
+        }
+      } catch (_) {
+        // Corpo sem JSON: o código HTTP já basta.
+      }
       throw QuoteException(
-        'B3: resposta ${response.statusCode} para $tickers',
+        'HTTP ${response.statusCode}$detalhe',
         status: response.statusCode,
       );
     }
