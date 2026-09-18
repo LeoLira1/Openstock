@@ -46,22 +46,73 @@ jobs:
       - name: Gerar APK
         run: flutter build apk --release
 
-      - name: Nomear APK
+      # A versão vem do pubspec.yaml, e não repetida à mão em cada passo: era
+      # assim que uma release saía com o número de outra.
+      - name: Descobrir a versão
+        id: versao
+        run: |
+          numero="$(sed -n 's/^version: *\([^+ ]*\).*/\1/p' pubspec.yaml | head -n 1)"
+          test -n "$numero"
+          echo "numero=$numero" >> "$GITHUB_OUTPUT"
+          echo "apk=OpenStock-v$numero.apk" >> "$GITHUB_OUTPUT"
+          echo "Versão $numero"
+
+      # Três merges seguidos no main republicaram o APK sobre a mesma tag, e
+      # quem baixasse a release recebia um binário diferente do que ela
+      # descrevia. Sem subir a versão, o build e os testes continuam rodando,
+      # mas a publicação é pulada.
+      - name: Conferir se a versão ainda não foi publicada
+        id: publicar
         if: github.event_name != 'pull_request'
-        run: cp build/app/outputs/flutter-apk/app-release.apk OpenStock-v1.6.1.apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.versao.outputs.numero }}"
+          alvo="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
+            --jq '.object.sha' 2>/dev/null || true)"
+          if [ -n "$alvo" ] && [ "$alvo" != "$GITHUB_SHA" ]; then
+            echo "nova=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::A tag $tag já existe em ${alvo:0:7}. Suba a versão no pubspec.yaml para publicar uma release nova."
+          else
+            echo "nova=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Nomear APK
+        if: github.event_name != 'pull_request' && steps.publicar.outputs.nova == 'true'
+        run: cp build/app/outputs/flutter-apk/app-release.apk "${{ steps.versao.outputs.apk }}"
 
       - name: Preparar release
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.publicar.outputs.nova == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.1
+          tag_name: v${{ steps.versao.outputs.numero }}
           target_commitish: main
-          name: OpenStock 1.6.1
+          name: OpenStock ${{ steps.versao.outputs.numero }}
           body: |
-            Correção da cotação intradiária e da data dos pregões.
+            Variação do dia corrigida e atualização mais rápida.
+
+            **Correção**
+
+            - Com a Finnhub configurada, o preço ao vivo dela vinha acompanhado do fechamento anterior, que substituía o valor já apurado pela série diária. A variação do dia era medida contra um preço do próprio pregão: em 18/09/2026 o PRIO3 aparecia em alta enquanto caía 0,87% contra o fechamento da véspera. A série diária volta a ser a referência, e um fechamento ausente ou zerado deixa de virar variação de 100%.
+
+            **Atualização mais rápida**
+
+            - Cotações buscadas em paralelo, em vez de uma esperando a outra
+            - Yahoo e Finnhub consultados ao mesmo tempo dentro de cada ativo
+            - brapi pausada por quinze minutos depois de recusar a chave, em vez de ser consultada de novo a cada ativo
+            - Dólar buscado junto das cotações e tempo limite de cada consulta reduzido de 15s para 10s
+
+            **Chave da brapi**
+
+            - Nova chave opcional nos ajustes, validada antes de ser salva e guardada no armazenamento seguro do aparelho
+            - Preço e série diária passam a vir da mesma fonte nativa da B3, no mesmo instante
+            - A chave viaja no cabeçalho `Authorization`, e não na URL
+            - Papéis brasileiros pedidos em lotes de dez: uma carteira de quinze ativos consome duas requisições por atualização em vez de quinze
+            - Sem chave, tudo continua funcionando como antes
+
+            **Versões anteriores**
 
             - Fechamento anterior alinhado à data real do mercado, sem confundir a parcial de hoje com o pregão anterior
-
             - Carteira B3 e Estados Unidos
             - Resultado diário zerado enquanto o mercado ainda não publicou cotação do novo pregão
             - Snapshots vinculados à data real da cotação, sem criar fechamento pela data do celular
@@ -92,21 +143,23 @@ jobs:
             - Sincronização Turso opcional e funcionamento offline
             - Migração não destrutiva dos dados existentes
 
-            Baixe `OpenStock-v1.6.1.apk` abaixo e instale no Android.
+            Baixe o APK abaixo e instale no Android.
           draft: true
 
       - name: Enviar APK e publicar release
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.publicar.outputs.nova == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          APK: ${{ steps.versao.outputs.apk }}
+          TAG: v${{ steps.versao.outputs.numero }}
         run: |
           release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq '.[] | select(.tag_name == "v1.6.1") | .id' | head -n 1)"
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
           test -n "$release_id"
 
           delete_existing_asset() {
             asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
-              --jq '.[] | select(.name == "OpenStock-v1.6.1.apk") | .id' | head -n 1)"
+              --jq ".[] | select(.name == \"$APK\") | .id" | head -n 1)"
             if [ -n "$asset_id" ]; then
               gh api --method DELETE \
                 "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
@@ -120,9 +173,9 @@ jobs:
               --connect-timeout 30 --max-time 900 \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Content-Type: application/vnd.android.package-archive" \
-              --data-binary @OpenStock-v1.6.1.apk \
+              --data-binary "@$APK" \
               --output upload-response.json \
-              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=OpenStock-v1.6.1.apk"; then
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$APK"; then
               uploaded=true
               break
             fi
