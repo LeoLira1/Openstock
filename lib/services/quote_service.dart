@@ -31,6 +31,11 @@ class QuoteService {
   /// atualização, sempre para o mesmo erro.
   static const _brapiPausa = Duration(minutes: 15);
 
+  /// Passar do limite de requisições é passageiro, e a janela da brapi se
+  /// renova em um minuto. Tratar isso como indisponibilidade jogava a carteira
+  /// inteira na consulta pública por um quarto de hora.
+  static const _brapiPausaCurta = Duration(minutes: 1);
+
   /// Papéis por consulta em lote.
   ///
   /// A brapi não documenta um teto, mas um lote grande demais vira uma URL
@@ -54,6 +59,10 @@ class QuoteService {
     final ate = _brapiLoteIndisponivelAte;
     return ate == null || DateTime.now().isAfter(ate);
   }
+
+  /// Quanto tempo a brapi fica de fora depois de recusar uma consulta.
+  static Duration pausaPara(int? status) =>
+      status == 429 ? _brapiPausaCurta : _brapiPausa;
 
   static int? _statusDe(Object error) =>
       error is QuoteException ? error.status : null;
@@ -255,7 +264,9 @@ class QuoteService {
         // pausa evita gastar uma ida de rede por ativo para o mesmo erro. Uma
         // falha de rede, por outro lado, pode não se repetir no próximo ativo.
         if (_brapiRecusou(error)) {
-          _brapiIndisponivelAte = DateTime.now().add(_brapiPausa);
+          _brapiIndisponivelAte = DateTime.now().add(
+            pausaPara(_statusDe(error)),
+          );
         }
       }
     }

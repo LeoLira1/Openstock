@@ -668,6 +668,28 @@ void main() {
       expect(error.toString(), contains('401'));
     }
   });
+  test('o limite de requisições pausa a brapi por pouco tempo', () async {
+    var idas = 0;
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host == 'brapi.dev') {
+        idas++;
+        return http.Response('{"error":"limite"}', 429);
+      }
+      return http.Response(_chartYahoo(), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+
+    await service.fetch(_prio3);
+    final durante = idas;
+    await service.fetch(_prio3);
+
+    // Dentro da pausa a brapi não é consultada de novo...
+    expect(idas, durante);
+    // ...mas a pausa é de um minuto, e não de quinze: passar do limite é
+    // passageiro e não pode manter a carteira na consulta pública.
+    expect(QuoteService.pausaPara(429), const Duration(minutes: 1));
+    expect(QuoteService.pausaPara(401), const Duration(minutes: 15));
+  });
 }
 
 const _prio3 = InvestmentAsset(
