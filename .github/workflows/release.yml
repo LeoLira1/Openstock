@@ -100,6 +100,12 @@ jobs:
           body: |
             Variação do dia corrigida e atualização mais rápida.
 
+            **Fechamento anterior ausente na fonte pública**
+
+            - A consulta pública publica o dia do pregão mesmo quando ainda não tem o fechamento dele. O ponto anterior da série passava por véspera e a variação do dia era medida contra outro pregão: em 18/09/2026, com o dia 17 vazio, PRIO3 aparecia subindo 1,05% contra o fechamento do dia 16 enquanto caía 0,08% no pregão. Um pregão sem fechamento agora é reconhecido como tal, e sem a véspera não há variação inventada.
+            - O fechamento anterior deixa de ser lido de `chartPreviousClose`, que descreve o início do gráfico e muda conforme o período pedido.
+            - Uma chave da brapi evita o problema na origem: a série da B3 vem completa. Para isso valer sempre, a recusa de uma consulta em lote deixou de desligar também as consultas individuais — era por aí que a carteira acabava na fonte pública mesmo com a chave configurada.
+
             **Gravação do histórico**
 
             - Cada atualização trazia um mês de fechamentos por ativo e reescrevia todos, embora só o pregão em curso mude de valor. Agora só o que mudou vai ao banco: em uma carteira de quinze ativos, algumas centenas de escritas por atualização viram uma ou duas.

@@ -42,16 +42,25 @@ class QuoteService {
   String? _finnhubToken;
   String? _brapiToken;
   DateTime? _brapiIndisponivelAte;
+  DateTime? _brapiLoteIndisponivelAte;
 
   bool get _brapiDisponivel {
     final ate = _brapiIndisponivelAte;
     return ate == null || DateTime.now().isAfter(ate);
   }
 
+  bool get _brapiLoteDisponivel {
+    if (!_brapiDisponivel) return false;
+    final ate = _brapiLoteIndisponivelAte;
+    return ate == null || DateTime.now().isAfter(ate);
+  }
+
+  static int? _statusDe(Object error) =>
+      error is QuoteException ? error.status : null;
+
   /// A brapi respondeu negando o acesso, e não apenas falhando.
   static bool _brapiRecusou(Object error) {
-    if (error is! QuoteException) return false;
-    final status = error.status;
+    final status = _statusDe(error);
     return status == 401 || status == 403 || status == 429;
   }
 
@@ -66,6 +75,7 @@ class QuoteService {
     // Uma chave nova merece uma tentativa imediata, mesmo que a anterior tenha
     // sido recusada há pouco.
     _brapiIndisponivelAte = null;
+    _brapiLoteIndisponivelAte = null;
   }
 
   /// Forma como um papel da B3 é identificado nas consultas e nos resultados.
@@ -87,7 +97,7 @@ class QuoteService {
   Future<Map<String, MarketQuote>> fetchBrazilianBatch(
     List<String> symbols,
   ) async {
-    if (_brapiToken == null || !_brapiDisponivel) return const {};
+    if (_brapiToken == null || !_brapiLoteDisponivel) return const {};
     final unicos = <String>{
       for (final symbol in symbols)
         if (normalizeB3Symbol(symbol).isNotEmpty) normalizeB3Symbol(symbol),
@@ -101,7 +111,17 @@ class QuoteService {
         cotacoes.addAll(await _fetchBrapiLote(lote));
         _brapiIndisponivelAte = null;
       } catch (error) {
-        if (_brapiRecusou(error)) {
+        // Pedir vários papéis de uma vez e pedir um só são recursos
+        // diferentes. Um plano que recusa o primeiro costuma atender o
+        // segundo, então a recusa do lote não pode derrubar a fonte inteira —
+        // era o que mandava a carteira para a consulta pública, onde a série
+        // pode vir com o fechamento da véspera faltando.
+        final status = _statusDe(error);
+        if (status == 403) {
+          _brapiLoteIndisponivelAte = DateTime.now().add(_brapiPausa);
+          break;
+        }
+        if (status == 401 || status == 429) {
           _brapiIndisponivelAte = DateTime.now().add(_brapiPausa);
           break;
         }
@@ -469,14 +489,19 @@ class QuoteService {
         : quoteList.first as Map<String, dynamic>;
     final closes = quote?['close'] as List<dynamic>? ?? const [];
     final history = <PricePoint>[];
+    // O pregão aparece na série mesmo quando o fechamento dele ainda não foi
+    // publicado. A data fica guardada para que um buraco não passe por um dia
+    // sem pregão.
+    DateTime? pregaoSemFechamento;
     for (var i = 0; i < timestamps.length && i < closes.length; i++) {
+      final data = DateTime.fromMillisecondsSinceEpoch(
+          (timestamps[i] as num).toInt() * 1000);
       final close = _number(closes[i]);
       if (close != null) {
-        history.add(PricePoint(
-          DateTime.fromMillisecondsSinceEpoch(
-              (timestamps[i] as num).toInt() * 1000),
-          close,
-        ));
+        history.add(PricePoint(data, close));
+      } else if (pregaoSemFechamento == null ||
+          data.isAfter(pregaoSemFechamento)) {
+        pregaoSemFechamento = data;
       }
     }
     history.sort((a, b) => a.date.compareTo(b.date));
@@ -484,9 +509,13 @@ class QuoteService {
     final previous = resolvePreviousClose(
       history: history,
       current: current,
-      providerPrevious: _number(meta['chartPreviousClose']) ??
-          _number(meta['regularMarketPreviousClose']),
+      // `chartPreviousClose` é o fechamento anterior ao início do gráfico, e
+      // muda conforme o período pedido: para PRIO3 em 18/09/2026 veio 64,19
+      // com cinco dias e 61,50 com um mês. Só o fechamento do próprio papel
+      // serve de referência.
+      providerPrevious: _number(meta['regularMarketPreviousClose']),
       currentPriceDate: marketDate,
+      pregaoSemFechamento: pregaoSemFechamento,
     );
     return MarketQuote(
       current: current,
@@ -523,6 +552,7 @@ double resolvePreviousClose({
   double? providerPrevious,
   DateTime? currentPriceDate,
   DateTime? now,
+  DateTime? pregaoSemFechamento,
 }) {
   if (history.isNotEmpty) {
     final ordered = [...history]..sort((a, b) => a.date.compareTo(b.date));
@@ -541,8 +571,27 @@ double resolvePreviousClose({
       final pointDay = DateTime.utc(utc.year, utc.month, utc.day);
       return pointDay.isBefore(referenceDay);
     });
-    if (completed.isNotEmpty) return completed.last.value;
+    if (completed.isNotEmpty) {
+      final ultimo = completed.last;
+      // Um provedor pode publicar o dia do pregão sem o fechamento dele. O
+      // ponto anterior continua existindo na série e assumi-lo como fechamento
+      // de ontem mede a variação contra outro dia: em 18/09/2026 a série do
+      // Yahoo trazia 16/09 e 18/09, com 17/09 vazio, e PRIO3 aparecia subindo
+      // 1% contra o fechamento de dois dias antes enquanto caía no pregão.
+      final lacuna = pregaoSemFechamento;
+      final incompleta = lacuna != null &&
+          _diaUtc(lacuna).isBefore(referenceDay) &&
+          _diaUtc(lacuna).isAfter(_diaUtc(ultimo.date));
+      if (!incompleta) return ultimo.value;
+      // Sem saber o fechamento de ontem, não há variação do dia a apurar.
+      return providerPrevious ?? current;
+    }
     if (ordered.length > 1) return ordered[ordered.length - 2].value;
   }
   return providerPrevious ?? current;
+}
+
+DateTime _diaUtc(DateTime value) {
+  final utc = value.toUtc();
+  return DateTime.utc(utc.year, utc.month, utc.day);
 }

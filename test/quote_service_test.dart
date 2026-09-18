@@ -440,6 +440,145 @@ void main() {
 
     expect(cotacoes.keys, {'PRIO3'});
   });
+  test('pregão sem fechamento não vira o fechamento de ontem', () async {
+    // Série real de PRIO3 em 18/09/2026: o Yahoo publicou o dia 17 sem
+    // fechamento, e o dia 16 ficou a um passo de ser lido como a véspera.
+    final service = QuoteService(client: MockClient((request) async {
+      return http.Response(
+        jsonEncode({
+          'chart': {
+            'error': null,
+            'result': [
+              {
+                'meta': {
+                  'regularMarketPrice': 63.24,
+                  'chartPreviousClose': 61.50,
+                  'regularMarketTime': 1789761949,
+                },
+                'timestamp': [1789470000, 1789556400, 1789642800, 1789729200],
+                'indicators': {
+                  'quote': [
+                    {
+                      'close': [65.68, 62.58, null, 63.24]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }),
+        200,
+      );
+    }));
+    const asset = InvestmentAsset(
+      symbol: 'AMD',
+      name: 'AMD',
+      market: AssetMarket.usa,
+      currency: AssetCurrency.usd,
+      quantity: 1,
+      averagePrice: 50,
+    );
+
+    final quote = await service.fetch(asset);
+
+    expect(quote.current, 63.24);
+    // 62,58 é de dois dias antes: assumi-lo faria o papel subir 1% na tela
+    // enquanto caía no pregão.
+    expect(quote.previousClose, isNot(62.58));
+    expect(quote.previousClose, 63.24);
+  });
+
+  test('fechamento anterior não vem do início do gráfico', () async {
+    // `chartPreviousClose` muda conforme o período pedido — 64,19 em cinco
+    // dias, 61,50 em um mês — então não descreve o pregão anterior.
+    final service = QuoteService(client: MockClient((request) async {
+      return http.Response(
+        jsonEncode({
+          'chart': {
+            'error': null,
+            'result': [
+              {
+                'meta': {
+                  'regularMarketPrice': 63.24,
+                  'chartPreviousClose': 61.50,
+                  'regularMarketTime': 1789761949,
+                },
+                'timestamp': [1789642800, 1789729200],
+                'indicators': {
+                  'quote': [
+                    {
+                      'close': [63.29, 63.24]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }),
+        200,
+      );
+    }));
+    const asset = InvestmentAsset(
+      symbol: 'AMD',
+      name: 'AMD',
+      market: AssetMarket.usa,
+      currency: AssetCurrency.usd,
+      quantity: 1,
+      averagePrice: 50,
+    );
+
+    final quote = await service.fetch(asset);
+
+    expect(quote.previousClose, 63.29);
+  });
+  test('lote recusado pelo plano não derruba a consulta individual', () async {
+    final caminhos = <String>[];
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host != 'brapi.dev') {
+        caminhos.add('yahoo');
+        return http.Response(_chartYahoo(), 200);
+      }
+      final tickers = request.url.path.replaceFirst('/api/quote/', '');
+      if (tickers.contains(',')) {
+        caminhos.add('lote');
+        // 403 é a resposta para um recurso fora do plano.
+        return http.Response('{"error":"recurso não incluído"}', 403);
+      }
+      caminhos.add('individual');
+      return http.Response(_quoteBrapi(), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+
+    final lote = await service.fetchBrazilianBatch(['PRIO3', 'PETR4']);
+    expect(lote, isEmpty);
+
+    // A carteira inteira ia para a fonte pública, onde a série pode vir sem o
+    // fechamento da véspera.
+    final quote = await service.fetch(_prio3);
+    expect(quote.historySource, 'brapi');
+    expect(quote.previousClose, 63.29);
+    expect(caminhos, ['lote', 'individual']);
+  });
+
+  test('chave recusada no lote pausa a fonte inteira', () async {
+    final caminhos = <String>[];
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host != 'brapi.dev') {
+        caminhos.add('yahoo');
+        return http.Response(_chartYahoo(), 200);
+      }
+      caminhos.add('brapi');
+      return http.Response('{"error":"token inválido"}', 401);
+    }));
+    service.configureBrapi('chave-vencida');
+
+    await service.fetchBrazilianBatch(['PRIO3', 'PETR4']);
+    await service.fetch(_prio3);
+
+    // Sem chave válida a consulta individual também não passaria: insistir só
+    // gastaria uma ida de rede por ativo.
+    expect(caminhos, ['brapi', 'yahoo']);
+  });
 }
 
 const _prio3 = InvestmentAsset(
