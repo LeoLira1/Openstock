@@ -224,17 +224,19 @@ class QuoteService {
       }
     }
     history.sort((a, b) => a.date.compareTo(b.date));
+    final marketDate = _marketDate(data['regularMarketTime']);
     return MarketQuote(
       current: current,
       previousClose: resolvePreviousClose(
         history: history,
         current: current,
         providerPrevious: previous,
+        currentPriceDate: marketDate,
       ),
       history: history,
       historySource: 'brapi',
-      priceDate: _marketDate(data['regularMarketTime']) ??
-          (history.isEmpty ? null : history.last.date),
+      priceDate:
+          marketDate ?? (history.isEmpty ? null : history.last.date),
     );
   }
 
@@ -304,19 +306,21 @@ class QuoteService {
       }
     }
     history.sort((a, b) => a.date.compareTo(b.date));
+    final marketDate = _epochDate(meta['regularMarketTime']);
     final previous = resolvePreviousClose(
       history: history,
       current: current,
       providerPrevious: _number(meta['chartPreviousClose']) ??
           _number(meta['regularMarketPreviousClose']),
+      currentPriceDate: marketDate,
     );
     return MarketQuote(
       current: current,
       previousClose: previous,
       history: history,
       historySource: 'yahoo',
-      priceDate: _epochDate(meta['regularMarketTime']) ??
-          (history.isEmpty ? null : history.last.date),
+      priceDate:
+          marketDate ?? (history.isEmpty ? null : history.last.date),
     );
   }
 
@@ -343,14 +347,26 @@ double resolvePreviousClose({
   required List<PricePoint> history,
   required double current,
   double? providerPrevious,
+  DateTime? currentPriceDate,
   DateTime? now,
 }) {
   if (history.isNotEmpty) {
     final ordered = [...history]..sort((a, b) => a.date.compareTo(b.date));
-    final localNow = now ?? DateTime.now();
-    final startOfToday = DateTime(localNow.year, localNow.month, localNow.day);
-    final completed =
-        ordered.where((point) => point.date.isBefore(startOfToday));
+    // Candles diarios podem chegar como meia-noite UTC. No horario brasileiro,
+    // isso vira 21h do dia anterior se comparado como horario local e faz a
+    // parcial de hoje parecer o fechamento de ontem. Comparamos o dia UTC do
+    // candle com o dia informado pelo proprio preco atual.
+    final reference = (currentPriceDate ?? now ?? DateTime.now()).toUtc();
+    final referenceDay = DateTime.utc(
+      reference.year,
+      reference.month,
+      reference.day,
+    );
+    final completed = ordered.where((point) {
+      final utc = point.date.toUtc();
+      final pointDay = DateTime.utc(utc.year, utc.month, utc.day);
+      return pointDay.isBefore(referenceDay);
+    });
     if (completed.isNotEmpty) return completed.last.value;
     if (ordered.length > 1) return ordered[ordered.length - 2].value;
   }
