@@ -474,14 +474,21 @@ class PortfolioController extends ChangeNotifier {
           i,
     ];
 
-    // As cotações são independentes entre si. Uma de cada vez fazia a
-    // atualização custar a soma de todas as latências de rede; em uma carteira
-    // de quinze ativos isso são quinze idas completas enfileiradas. A janela
-    // limitada aproveita a espera sem abrir dezenas de conexões no celular.
-    final quotes = <int, MarketQuote>{};
+    // A brapi resolve a carteira brasileira inteira em uma requisição, com a
+    // série diária de cada papel. O que ela não atender continua pelo caminho
+    // individual logo abaixo.
+    final quotes = await _cotacoesEmLote(indices);
+    final restantes = indices
+        .where((indice) => !quotes.containsKey(indice))
+        .toList(growable: false);
+
+    // O restante é independente entre si. Um de cada vez fazia a atualização
+    // custar a soma de todas as latências de rede; em uma carteira de quinze
+    // ativos isso são quinze idas completas enfileiradas. A janela limitada
+    // aproveita a espera sem abrir dezenas de conexões no celular.
     final falhas = <int>{};
-    for (var inicio = 0; inicio < indices.length; inicio += _janelaDeCotacoes) {
-      final lote = indices.skip(inicio).take(_janelaDeCotacoes);
+    for (var inicio = 0; inicio < restantes.length; inicio += _janelaDeCotacoes) {
+      final lote = restantes.skip(inicio).take(_janelaDeCotacoes);
       await Future.wait(lote.map((indice) async {
         try {
           quotes[indice] = await _quotes.fetch(assets[indice]);
@@ -589,6 +596,37 @@ class PortfolioController extends ChangeNotifier {
     refreshing = false;
     notifyListeners();
     if (syncAfter && tursoConfigured) await synchronize(silent: true);
+  }
+
+  /// Cotações da B3 obtidas de uma vez só, indexadas pela posição do ativo.
+  ///
+  /// Sem chave da brapi a consulta em lote não se sustenta — apenas quatro
+  /// papéis de demonstração respondem — então nada é tentado e cada ativo segue
+  /// pelo caminho individual. Um papel que o lote não trouxer também cai lá,
+  /// sem virar erro para o usuário.
+  Future<Map<int, MarketQuote>> _cotacoesEmLote(List<int> indices) async {
+    if (!brapiConfigured) return {};
+    final brasileiros = indices
+        .where((indice) => assets[indice].market == AssetMarket.b3)
+        .toList(growable: false);
+    if (brasileiros.length < 2) return {};
+    try {
+      final porSimbolo = await _quotes.fetchBrazilianBatch(
+        [for (final indice in brasileiros) assets[indice].symbol],
+      );
+      if (porSimbolo.isEmpty) return {};
+      return {
+        for (final indice in brasileiros)
+          if (porSimbolo[QuoteService.normalizeB3Symbol(
+                  assets[indice].symbol)] !=
+              null)
+            indice: porSimbolo[
+                QuoteService.normalizeB3Symbol(assets[indice].symbol)]!,
+      };
+    } catch (_) {
+      // A consulta individual ainda vai acontecer para todos eles.
+      return {};
+    }
   }
 
   DateTime? _snapshotDateFor(InvestmentAsset asset) {

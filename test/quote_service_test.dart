@@ -364,6 +364,82 @@ void main() {
     expect(consulta?.url.path, '/api/quote/PETR4');
     expect(consulta?.headers['Authorization'], 'Bearer chave-brapi');
   });
+  test('a carteira brasileira cabe em uma requisição', () async {
+    final consultas = <http.BaseRequest>[];
+    final service = QuoteService(client: MockClient((request) async {
+      consultas.add(request);
+      return http.Response(_loteBrapi(['PRIO3', 'PETR4', 'VALE3']), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+
+    final cotacoes = await service.fetchBrazilianBatch(
+      ['prio3', 'PETR4.SA', ' vale3 '],
+    );
+
+    expect(consultas.length, 1);
+    expect(consultas.single.url.path, '/api/quote/PRIO3,PETR4,VALE3');
+    expect(consultas.single.headers['Authorization'], 'Bearer chave-brapi');
+    expect(cotacoes.keys, {'PRIO3', 'PETR4', 'VALE3'});
+    expect(cotacoes['PRIO3']!.current, 62.74);
+    // A série vem junto: é ela que define o fechamento anterior.
+    expect(cotacoes['PRIO3']!.previousClose, 63.29);
+    expect(cotacoes['PRIO3']!.history, hasLength(2));
+  });
+
+  test('sem chave o lote nem é tentado', () async {
+    var idas = 0;
+    final service = QuoteService(client: MockClient((request) async {
+      idas++;
+      return http.Response(_loteBrapi(['PRIO3']), 200);
+    }));
+
+    final cotacoes = await service.fetchBrazilianBatch(['PRIO3', 'PETR4']);
+
+    // Só quatro papéis respondem sem token, e misturar qualquer outro faz a
+    // chamada inteira exigir chave.
+    expect(idas, 0);
+    expect(cotacoes, isEmpty);
+  });
+
+  test('carteira grande é dividida em lotes', () async {
+    final pedidos = <String>[];
+    final service = QuoteService(client: MockClient((request) async {
+      final tickers = request.url.path.replaceFirst('/api/quote/', '');
+      pedidos.add(tickers);
+      return http.Response(_loteBrapi(tickers.split(',')), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+
+    final simbolos = List.generate(23, (i) => 'ATIVO$i');
+    final cotacoes = await service.fetchBrazilianBatch(simbolos);
+
+    expect(pedidos.length, 3);
+    expect(pedidos.map((p) => p.split(',').length), [10, 10, 3]);
+    expect(cotacoes, hasLength(23));
+  });
+
+  test('lote recusado devolve vazio sem derrubar a atualização', () async {
+    final service = QuoteService(client: MockClient((request) async {
+      return http.Response('{"error":"token"}', 401);
+    }));
+    service.configureBrapi('chave-vencida');
+
+    final cotacoes = await service.fetchBrazilianBatch(['PRIO3', 'PETR4']);
+
+    // Cada ativo ainda será buscado pelo caminho individual.
+    expect(cotacoes, isEmpty);
+  });
+
+  test('papel ausente na resposta não entra no resultado', () async {
+    final service = QuoteService(client: MockClient((request) async {
+      return http.Response(_loteBrapi(['PRIO3']), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+
+    final cotacoes = await service.fetchBrazilianBatch(['PRIO3', 'XPTO9']);
+
+    expect(cotacoes.keys, {'PRIO3'});
+  });
 }
 
 const _prio3 = InvestmentAsset(
@@ -411,5 +487,22 @@ String _quoteBrapi() => jsonEncode({
             {'date': 1789689600, 'close': 62.57},
           ],
         }
+      ]
+    });
+
+/// Resposta da brapi com vários papéis, cada um com a sua série diária.
+String _loteBrapi(List<String> symbols) => jsonEncode({
+      'results': [
+        for (final symbol in symbols)
+          {
+            'symbol': symbol,
+            'regularMarketPrice': 62.74,
+            'regularMarketPreviousClose': 63.29,
+            'regularMarketTime': 1789748820,
+            'historicalDataPrice': [
+              {'date': 1789603200, 'close': 63.29},
+              {'date': 1789689600, 'close': 62.57},
+            ],
+          }
       ]
     });
