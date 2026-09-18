@@ -351,9 +351,23 @@ class PortfolioController extends ChangeNotifier {
     try {
       final valid = await _quotes.validateBrapiToken(key);
       brapiValidated = valid;
-      brapiConnectionMessage = valid
-          ? 'Conexão validada com a brapi.'
-          : 'A brapi não confirmou essa chave.';
+      if (!valid) {
+        brapiConnectionMessage = 'A brapi não confirmou essa chave.';
+      } else {
+        // A validação usa uma consulta individual. O lote é outro recurso e
+        // pode ser recusado sozinho, então vale dizer qual dos dois responde.
+        final motivo = await _quotes.motivoLoteIndisponivel(
+          assets
+              .where((asset) => asset.market == AssetMarket.b3)
+              .map((asset) => asset.symbol)
+              .toList(growable: false),
+        );
+        brapiConnectionMessage = motivo == null
+            ? 'Conexão validada com a brapi.'
+            : 'Conexão validada. A consulta de vários papéis de uma vez não '
+                'foi aceita ($motivo), então cada ativo é pedido '
+                'separadamente.';
+      }
     } catch (error) {
       brapiValidated = false;
       brapiConnectionMessage = error.toString();

@@ -110,21 +110,15 @@ class QuoteService {
       try {
         cotacoes.addAll(await _fetchBrapiLote(lote));
         _brapiIndisponivelAte = null;
-      } catch (error) {
-        // Pedir vários papéis de uma vez e pedir um só são recursos
-        // diferentes. Um plano que recusa o primeiro costuma atender o
-        // segundo, então a recusa do lote não pode derrubar a fonte inteira —
-        // era o que mandava a carteira para a consulta pública, onde a série
-        // pode vir com o fechamento da véspera faltando.
-        final status = _statusDe(error);
-        if (status == 403) {
-          _brapiLoteIndisponivelAte = DateTime.now().add(_brapiPausa);
-          break;
-        }
-        if (status == 401 || status == 429) {
-          _brapiIndisponivelAte = DateTime.now().add(_brapiPausa);
-          break;
-        }
+      } catch (_) {
+        // O lote é uma otimização, e pedir vários papéis de uma vez é um
+        // recurso diferente de pedir um só. Seja qual for o motivo da recusa —
+        // plano, limite ou o que a brapi decidir responder — quem decide sobre
+        // a fonte é a consulta individual, que pode muito bem ser aceita.
+        // Tentar adivinhar o motivo aqui foi o que manteve a carteira inteira
+        // na consulta pública mesmo com a chave configurada e validada.
+        _brapiLoteIndisponivelAte = DateTime.now().add(_brapiPausa);
+        break;
       }
     }
     return cotacoes;
@@ -146,6 +140,28 @@ class QuoteService {
       if (quote != null) cotacoes[normalizeB3Symbol(symbol)] = quote;
     }
     return cotacoes;
+  }
+
+  /// Tenta uma consulta em lote e devolve o motivo quando ela não é aceita.
+  ///
+  /// A validação da chave usa uma consulta individual, então ela pode passar
+  /// enquanto o lote é recusado. Sem isso à mão, a tela dizia apenas
+  /// "conectada" enquanto a carteira era atendida por outra fonte.
+  Future<String?> motivoLoteIndisponivel(List<String> symbols) async {
+    final unicos = <String>{
+      for (final symbol in symbols)
+        if (normalizeB3Symbol(symbol).isNotEmpty) normalizeB3Symbol(symbol),
+    }.take(_brapiLote).toList(growable: false);
+    if (unicos.length < 2) return null;
+    try {
+      final cotacoes = await _fetchBrapiLote(unicos);
+      if (cotacoes.isEmpty) return 'a resposta não trouxe nenhum papel';
+      _brapiLoteIndisponivelAte = null;
+      return null;
+    } catch (error) {
+      final status = _statusDe(error);
+      return status == null ? error.toString() : 'HTTP $status';
+    }
   }
 
   /// Confere se a chave responde por um papel comum da B3.

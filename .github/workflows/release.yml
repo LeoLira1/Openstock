@@ -104,7 +104,8 @@ jobs:
 
             - A consulta pública publica o dia do pregão mesmo quando ainda não tem o fechamento dele. O ponto anterior da série passava por véspera e a variação do dia era medida contra outro pregão: em 18/09/2026, com o dia 17 vazio, PRIO3 aparecia subindo 1,05% contra o fechamento do dia 16 enquanto caía 0,08% no pregão. Um pregão sem fechamento agora é reconhecido como tal, e sem a véspera não há variação inventada.
             - O fechamento anterior deixa de ser lido de `chartPreviousClose`, que descreve o início do gráfico e muda conforme o período pedido.
-            - Uma chave da brapi evita o problema na origem: a série da B3 vem completa. Para isso valer sempre, a recusa de uma consulta em lote deixou de desligar também as consultas individuais — era por aí que a carteira acabava na fonte pública mesmo com a chave configurada.
+            - Uma chave da brapi evita o problema na origem: a série da B3 vem completa. Para isso valer sempre, a recusa de uma consulta em lote deixou de desligar a fonte: o lote é só uma otimização, e quem decide é a consulta individual, que costuma ser aceita. Era por aí que a carteira acabava na fonte pública mesmo com a chave configurada e validada.
+            - O teste de conexão dos ajustes passa a dizer quando o lote não é aceito, em vez de apenas confirmar a chave e deixar a fonte real invisível.
 
             **Gravação do histórico**
 
