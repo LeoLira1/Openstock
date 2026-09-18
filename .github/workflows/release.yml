@@ -68,8 +68,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v${{ steps.versao.outputs.numero }}"
-          alvo="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
-            --jq '.object.sha' 2>/dev/null || true)"
+          alvo=""
+          # Uma tag ausente devolve 404 e o corpo do erro sai pelo stdout. Sem
+          # separar o sucesso da falha, esse JSON passava por um identificador
+          # de commit e a publicação era pulada: só um sha hexadecimal conta.
+          if resposta="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
+            --jq '.object.sha' 2>/dev/null)"; then
+            alvo="$resposta"
+          fi
+          case "$alvo" in
+            *[!0-9a-f]* | '') alvo="" ;;
+          esac
           if [ -n "$alvo" ] && [ "$alvo" != "$GITHUB_SHA" ]; then
             echo "nova=false" >> "$GITHUB_OUTPUT"
             echo "::warning::A tag $tag já existe em ${alvo:0:7}. Suba a versão no pubspec.yaml para publicar uma release nova."
