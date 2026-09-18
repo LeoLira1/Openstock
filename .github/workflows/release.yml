@@ -106,6 +106,7 @@ jobs:
             - O fechamento anterior deixa de ser lido de `chartPreviousClose`, que descreve o início do gráfico e muda conforme o período pedido.
             - Uma chave da brapi evita o problema na origem: a série da B3 vem completa. Para isso valer sempre, a recusa de uma consulta em lote deixou de desligar a fonte: o lote é só uma otimização, e quem decide é a consulta individual, que costuma ser aceita. Era por aí que a carteira acabava na fonte pública mesmo com a chave configurada e validada.
             - O teste de conexão dos ajustes passa a dizer quando o lote não é aceito, em vez de apenas confirmar a chave e deixar a fonte real invisível.
+            - A chave da brapi passa a ser validada contra um papel que exige autenticação. PETR4, VALE3, ITUB4 e MGLU3 respondem sem token nenhum, e validar contra um deles aprovava qualquer chave: a tela dizia "conectada" enquanto os ativos brasileiros eram atendidos pela consulta pública. A recusa agora mostra o código devolvido pela brapi, que separa uma chave recusada de uma chave que não chegou a ser enviada.
 
             **Gravação do histórico**
 
