@@ -155,4 +155,87 @@ void main() {
       DateTime.fromMillisecondsSinceEpoch(marketEpoch * 1000),
     );
   });
+
+  test('preço ao vivo da Finnhub não substitui o fechamento da série', () async {
+    // Caso real de PRIO3 em 18/09/2026: a Finnhub devolveu o preço do momento
+    // como `pc`, o que fazia a tela mostrar alta no dia enquanto o pregão
+    // acumulava queda contra o fechamento de 17/09.
+    final service = QuoteService(client: MockClient((request) async {
+      final host = request.url.host;
+      if (host == 'brapi.dev') {
+        return http.Response('{"error":"token"}', 401);
+      }
+      if (host == 'finnhub.io') {
+        return http.Response(
+          jsonEncode({'c': 62.74, 'pc': 62.58, 't': 1789748820}),
+          200,
+        );
+      }
+      return http.Response(
+        jsonEncode({
+          'chart': {
+            'error': null,
+            'result': [
+              {
+                'meta': {
+                  'regularMarketPrice': 62.78,
+                  'chartPreviousClose': 63.29,
+                  'regularMarketTime': 1789748820,
+                },
+                'timestamp': [1789603200, 1789689600],
+                'indicators': {
+                  'quote': [
+                    {
+                      'close': [63.29, 62.57]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }),
+        200,
+      );
+    }));
+    service.configureFinnhub('chave-de-teste');
+    const asset = InvestmentAsset(
+      symbol: 'PRIO3',
+      name: 'PRIO',
+      market: AssetMarket.b3,
+      currency: AssetCurrency.brl,
+      quantity: 267,
+      averagePrice: 42.38,
+    );
+
+    final quote = await service.fetch(asset);
+
+    expect(quote.current, 62.74);
+    expect(quote.previousClose, 63.29);
+    final variacao =
+        (quote.current - quote.previousClose) / quote.previousClose * 100;
+    expect(variacao, lessThan(0));
+    expect(variacao, closeTo(-0.87, 0.01));
+  });
+
+  test('fechamento zerado da Finnhub não vira variação de 100%', () async {
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host == 'finnhub.io') {
+        return http.Response(jsonEncode({'c': 101.0, 'pc': 0}), 200);
+      }
+      return http.Response('{"chart":{"error":"nao encontrado"}}', 404);
+    }));
+    service.configureFinnhub('chave-de-teste');
+    const asset = InvestmentAsset(
+      symbol: 'AMD',
+      name: 'AMD',
+      market: AssetMarket.usa,
+      currency: AssetCurrency.usd,
+      quantity: 1,
+      averagePrice: 90,
+    );
+
+    final quote = await service.fetch(asset);
+
+    expect(quote.previousClose, 101.0);
+  });
 }

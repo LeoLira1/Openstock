@@ -97,13 +97,7 @@ class QuoteService {
     if (_finnhubToken != null) {
       try {
         final live = await _fetchFinnhub('$symbol.SA', _finnhubToken!);
-        return MarketQuote(
-          current: live.current,
-          previousClose: live.previousClose,
-          history: history?.history ?? const [],
-          historySource: history?.historySource ?? live.historySource,
-          priceDate: live.priceDate ?? history?.priceDate,
-        );
+        return _mergeLiveWithHistory(live, history);
       } catch (_) {
         // Mantém a cotação histórica pública quando a chave não tem acesso à B3.
       }
@@ -130,17 +124,35 @@ class QuoteService {
     if (_finnhubToken == null) return history!;
     try {
       final live = await _fetchFinnhub(symbol, _finnhubToken!);
-      return MarketQuote(
-        current: live.current,
-        previousClose: live.previousClose,
-        history: history?.history ?? const [],
-        historySource: history?.historySource ?? live.historySource,
-        priceDate: live.priceDate ?? history?.priceDate,
-      );
+      return _mergeLiveWithHistory(live, history);
     } catch (_) {
       if (history != null) return history;
       rethrow;
     }
+  }
+
+  /// Combina o preço ao vivo da Finnhub com a série diária já obtida.
+  ///
+  /// O `pc` da Finnhub é um metadado solto e, para a B3, costuma chegar
+  /// defasado: no meio do pregão ele já trouxe um preço do próprio dia, o que
+  /// fazia a variação diária ser medida contra a parcial de hoje em vez do
+  /// fechamento anterior. A série diária continua sendo a referência primária;
+  /// o metadado só entra quando não há nenhum pregão concluído para comparar.
+  MarketQuote _mergeLiveWithHistory(MarketQuote live, MarketQuote? history) {
+    final series = history?.history ?? const <PricePoint>[];
+    final livePrevious = live.previousClose > 0 ? live.previousClose : null;
+    return MarketQuote(
+      current: live.current,
+      previousClose: resolvePreviousClose(
+        history: series,
+        current: live.current,
+        providerPrevious: history?.previousClose ?? livePrevious,
+        currentPriceDate: live.priceDate ?? history?.priceDate,
+      ),
+      history: series,
+      historySource: history?.historySource ?? live.historySource,
+      priceDate: live.priceDate ?? history?.priceDate,
+    );
   }
 
   Future<MarketQuote> _fetchFinnhub(String symbol, String token) async {
@@ -181,7 +193,7 @@ class QuoteService {
     }
     return MarketQuote(
       current: current,
-      previousClose: previous ?? current,
+      previousClose: previous != null && previous > 0 ? previous : current,
       history: const [],
       historySource: 'finnhub',
       priceDate: _epochDate(data?['t']),
