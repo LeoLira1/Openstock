@@ -510,18 +510,58 @@ class DatabaseService {
     return rows.isNotEmpty;
   }
 
-  Future<void> upsertHistory(
+  /// Grava os fechamentos recebidos e devolve quantos precisaram ir ao banco.
+  ///
+  /// Cada atualização traz um mês inteiro de fechamentos, mas só o pregão em
+  /// curso muda de valor. Antes, todo ponto virava uma sentença de escrita por
+  /// ativo e por atualização — algumas centenas em uma carteira comum — mesmo
+  /// quando o banco já tinha exatamente aquele fechamento. Uma consulta à
+  /// janela recebida troca esse trabalho por, quase sempre, uma única escrita.
+  Future<int> upsertHistory(
     InvestmentAsset asset,
     List<PricePoint> points, {
     required String source,
     bool synced = false,
   }) async {
-    if (points.isEmpty) return;
+    if (points.isEmpty) return 0;
     final db = await database;
     final now = DateTime.now().toUtc().toIso8601String();
+    final currency = asset.currency.name;
+
+    var inicio = dateKey(points.first.date);
+    for (final point in points) {
+      final chave = dateKey(point.date);
+      if (chave.compareTo(inicio) < 0) inicio = chave;
+    }
+    final existentes = <String, ({double close, String currency, String source})>{};
+    final rows = await db.query(
+      'asset_price_history',
+      columns: ['price_date', 'close_price', 'currency', 'source'],
+      where: 'asset_key = ? AND price_date >= ?',
+      whereArgs: [asset.syncKey, inicio],
+    );
+    for (final row in rows) {
+      existentes[row['price_date'] as String] = (
+        close: (row['close_price'] as num).toDouble(),
+        currency: row['currency'] as String,
+        source: row['source'] as String,
+      );
+    }
+
+    // O mesmo critério que o banco já usava para decidir se valia atualizar,
+    // aplicado antes de montar a sentença.
+    final pendentes = points.where((point) {
+      final atual = existentes[dateKey(point.date)];
+      return atual == null ||
+          atual.close != point.value ||
+          atual.currency != currency ||
+          atual.source != source;
+    }).toList(growable: false);
+    if (pendentes.isEmpty) return 0;
+
     await db.transaction((txn) async {
       final batch = txn.batch();
-      for (final point in points) {
+      for (final point in pendentes) {
         batch.rawInsert('''
           INSERT INTO asset_price_history(
             asset_key, price_date, close_price, currency, source,
@@ -540,7 +580,7 @@ class DatabaseService {
           asset.syncKey,
           dateKey(point.date),
           point.value,
-          asset.currency.name,
+          currency,
           source,
           now,
           now,
@@ -549,6 +589,7 @@ class DatabaseService {
       }
       await batch.commit(noResult: true);
     });
+    return pendentes.length;
   }
 
   Future<List<PricePoint>> loadAssetHistory(
