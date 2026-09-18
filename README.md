@@ -137,10 +137,18 @@ As identidades sincronizadas são lógicas e estáveis, por exemplo `b3:PRIO3` e
 
 ## Fontes de cotação
 
-- B3 atual: [brapi.dev](https://brapi.dev/), que devolve preço e série diária
-  na mesma consulta. Com uma chave gratuita configurada nos ajustes, cada ativo
-  brasileiro custa uma única ida de rede; sem ela a brapi só atende símbolos de
-  demonstração e o aplicativo recorre à consulta pública `.SA`;
+- B3 atual: [brapi.dev](https://brapi.dev/) em `/api/quote`, que devolve preço
+  e série diária na mesma consulta. A chave é enviada no cabeçalho
+  `Authorization: Bearer`, e não na query, para não aparecer em log de proxy ou
+  de erro. Com uma chave gratuita configurada nos ajustes, cada ativo brasileiro
+  custa uma única ida de rede; sem ela a brapi só atende símbolos de
+  demonstração e o aplicativo recorre à consulta pública `.SA`. Com chave, os
+  papéis brasileiros são pedidos em lotes de dez na mesma requisição, então uma
+  carteira de quinze ativos consome duas chamadas por atualização em vez de
+  quinze; o que o lote não trouxer cai no caminho individual. O endpoint
+  `/api/v2/stocks/quote` é o recomendado para novas integrações, mas não
+  devolve `historicalDataPrice` nem pedindo `range` e `interval` — e é a série
+  diária que define o fechamento anterior aqui;
 - Estados Unidos atual: Finnhub quando configurada, com a consulta pública já
   existente como contingência;
 - histórico diário B3/EUA e USD/BRL: endpoint público de gráficos do Yahoo

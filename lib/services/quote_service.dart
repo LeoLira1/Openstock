@@ -31,6 +31,13 @@ class QuoteService {
   /// atualização, sempre para o mesmo erro.
   static const _brapiPausa = Duration(minutes: 15);
 
+  /// Papéis por consulta em lote.
+  ///
+  /// A brapi não documenta um teto, mas um lote grande demais vira uma URL
+  /// longa e transforma qualquer recusa em uma perda maior: o valor mantém a
+  /// carteira típica em uma ou duas idas de rede sem apostar alto em cada uma.
+  static const _brapiLote = 10;
+
   final http.Client _client;
   String? _finnhubToken;
   String? _brapiToken;
@@ -59,6 +66,66 @@ class QuoteService {
     // Uma chave nova merece uma tentativa imediata, mesmo que a anterior tenha
     // sido recusada há pouco.
     _brapiIndisponivelAte = null;
+  }
+
+  /// Forma como um papel da B3 é identificado nas consultas e nos resultados.
+  static String normalizeB3Symbol(String symbol) =>
+      symbol.trim().toUpperCase().replaceAll('.SA', '');
+
+  /// Consulta vários papéis da B3 em uma única ida de rede.
+  ///
+  /// A brapi aceita os tickers separados por vírgula e devolve preço e série
+  /// diária de cada um na mesma resposta, então uma carteira inteira cabe em
+  /// uma requisição em vez de uma por ativo — o que também multiplica por um a
+  /// cada atualização o consumo da cota, em vez de por quinze.
+  ///
+  /// Sem chave a consulta em lote não se sustenta: só quatro papéis de
+  /// demonstração respondem e misturar qualquer outro faz a chamada inteira
+  /// exigir token. Nesse caso o retorno é vazio e cada ativo segue pelo caminho
+  /// individual. O mesmo vale para os papéis de um lote que falhar: eles
+  /// simplesmente não aparecem no resultado.
+  Future<Map<String, MarketQuote>> fetchBrazilianBatch(
+    List<String> symbols,
+  ) async {
+    if (_brapiToken == null || !_brapiDisponivel) return const {};
+    final unicos = <String>{
+      for (final symbol in symbols)
+        if (normalizeB3Symbol(symbol).isNotEmpty) normalizeB3Symbol(symbol),
+    }.toList(growable: false);
+    if (unicos.isEmpty) return const {};
+
+    final cotacoes = <String, MarketQuote>{};
+    for (var inicio = 0; inicio < unicos.length; inicio += _brapiLote) {
+      final lote = unicos.skip(inicio).take(_brapiLote).toList(growable: false);
+      try {
+        cotacoes.addAll(await _fetchBrapiLote(lote));
+        _brapiIndisponivelAte = null;
+      } catch (error) {
+        if (_brapiRecusou(error)) {
+          _brapiIndisponivelAte = DateTime.now().add(_brapiPausa);
+          break;
+        }
+      }
+    }
+    return cotacoes;
+  }
+
+  Future<Map<String, MarketQuote>> _fetchBrapiLote(List<String> symbols) async {
+    final response = await _brapiGet(symbols.join(','));
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final results = body['results'] as List<dynamic>?;
+    if (results == null || results.isEmpty) {
+      throw QuoteException('B3: nenhum resultado para ${symbols.join(', ')}');
+    }
+    final cotacoes = <String, MarketQuote>{};
+    for (final item in results) {
+      final data = item as Map<String, dynamic>;
+      final symbol = data['symbol']?.toString();
+      if (symbol == null) continue;
+      final quote = _brapiQuote(data);
+      if (quote != null) cotacoes[normalizeB3Symbol(symbol)] = quote;
+    }
+    return cotacoes;
   }
 
   /// Confere se a chave responde por um papel comum da B3.
@@ -267,38 +334,58 @@ class QuoteService {
     );
   }
 
+  /// Consulta a brapi pelo endpoint `/api/quote`.
+  ///
+  /// O `/api/v2/stocks/quote` é o endpoint recomendado para novas integrações,
+  /// mas devolve apenas a cotação do momento: mesmo pedindo `range` e
+  /// `interval` ele não traz `historicalDataPrice`. Aqui a série diária não é
+  /// acessório — é ela que define o fechamento anterior — então a rota
+  /// continua sendo a `/api/quote`, que entrega preço e série na mesma
+  /// resposta.
   Future<MarketQuote> _fetchBrapi(String rawSymbol, {String? token}) async {
-    final symbol = rawSymbol.trim().toUpperCase().replaceAll('.SA', '');
-    final chave = token ?? _brapiToken;
-    final uri = Uri.https(
-      'brapi.dev',
-      '/api/quote/$symbol',
-      {
-        'range': '1mo',
-        'interval': '1d',
-        'fundamental': 'false',
-        if (chave != null) 'token': chave,
-      },
-    );
-    final response =
-        await _client.get(uri).timeout(_timeout);
-    if (response.statusCode != 200) {
-      throw QuoteException(
-        'B3: resposta ${response.statusCode} para $symbol',
-        status: response.statusCode,
-      );
-    }
+    final symbol = normalizeB3Symbol(rawSymbol);
+    final response = await _brapiGet(symbol, token: token);
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     final results = body['results'] as List<dynamic>?;
     if (results == null || results.isEmpty) {
       throw QuoteException('Ativo $symbol não encontrado na B3');
     }
-    final data = results.first as Map<String, dynamic>;
-    final current = _number(data['regularMarketPrice']);
-    final previous = _number(data['regularMarketPreviousClose']);
-    if (current == null) {
+    final quote = _brapiQuote(results.first as Map<String, dynamic>);
+    if (quote == null) {
       throw QuoteException('Cotação indisponível para $symbol');
     }
+    return quote;
+  }
+
+  Future<http.Response> _brapiGet(String tickers, {String? token}) async {
+    final chave = token ?? _brapiToken;
+    final uri = Uri.https(
+      'brapi.dev',
+      '/api/quote/$tickers',
+      {'range': '1mo', 'interval': '1d', 'fundamental': 'false'},
+    );
+    // A chave vai no cabeçalho, e não na query: assim ela não aparece em log
+    // de proxy, histórico de URL nem relatório de erro.
+    final response = await _client.get(
+      uri,
+      headers: {
+        if (chave != null) 'Authorization': 'Bearer $chave',
+      },
+    ).timeout(_timeout);
+    if (response.statusCode != 200) {
+      throw QuoteException(
+        'B3: resposta ${response.statusCode} para $tickers',
+        status: response.statusCode,
+      );
+    }
+    return response;
+  }
+
+  /// Converte um resultado da brapi, seja de uma consulta simples ou de um lote.
+  MarketQuote? _brapiQuote(Map<String, dynamic> data) {
+    final current = _number(data['regularMarketPrice']);
+    if (current == null) return null;
+    final previous = _number(data['regularMarketPreviousClose']);
     final history = <PricePoint>[];
     for (final item in (data['historicalDataPrice'] as List<dynamic>? ?? [])) {
       final row = item as Map<String, dynamic>;
@@ -323,8 +410,7 @@ class QuoteService {
       ),
       history: history,
       historySource: 'brapi',
-      priceDate:
-          marketDate ?? (history.isEmpty ? null : history.last.date),
+      priceDate: marketDate ?? (history.isEmpty ? null : history.last.date),
     );
   }
 
