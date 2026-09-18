@@ -290,11 +290,11 @@ void main() {
   });
   test('com chave, a brapi resolve o ativo em uma única consulta', () async {
     final hosts = <String>[];
-    Uri? consultaBrapi;
+    http.BaseRequest? consultaBrapi;
     final service = QuoteService(client: MockClient((request) async {
       hosts.add(request.url.host);
       if (request.url.host == 'brapi.dev') {
-        consultaBrapi = request.url;
+        consultaBrapi = request;
         return http.Response(_quoteBrapi(), 200);
       }
       return http.Response(_chartYahoo(), 200);
@@ -304,7 +304,10 @@ void main() {
 
     final quote = await service.fetch(_prio3);
 
-    expect(consultaBrapi?.queryParameters['token'], 'chave-brapi');
+    expect(consultaBrapi?.headers['Authorization'], 'Bearer chave-brapi');
+    // A chave não pode vazar na URL, que acaba em log de proxy e de erro.
+    expect(consultaBrapi?.url.query, isNot(contains('chave-brapi')));
+    expect(consultaBrapi?.url.path, '/api/quote/PRIO3');
     // Sem chave seriam duas fontes públicas para montar o mesmo dado.
     expect(hosts, ['brapi.dev']);
     expect(quote.current, 62.74);
@@ -349,17 +352,17 @@ void main() {
   });
 
   test('validação da chave brapi consulta um papel comum', () async {
-    Uri? consulta;
+    http.BaseRequest? consulta;
     final service = QuoteService(client: MockClient((request) async {
-      consulta = request.url;
+      consulta = request;
       return http.Response(_quoteBrapi(), 200);
     }));
 
     final valido = await service.validateBrapiToken('  chave-brapi  ');
 
     expect(valido, isTrue);
-    expect(consulta?.path, '/api/quote/PETR4');
-    expect(consulta?.queryParameters['token'], 'chave-brapi');
+    expect(consulta?.url.path, '/api/quote/PETR4');
+    expect(consulta?.headers['Authorization'], 'Bearer chave-brapi');
   });
 }
 

@@ -267,21 +267,30 @@ class QuoteService {
     );
   }
 
+  /// Consulta a brapi pelo endpoint `/api/quote`.
+  ///
+  /// O `/api/v2/stocks/quote` é o endpoint recomendado para novas integrações,
+  /// mas devolve apenas a cotação do momento: mesmo pedindo `range` e
+  /// `interval` ele não traz `historicalDataPrice`. Aqui a série diária não é
+  /// acessório — é ela que define o fechamento anterior — então a rota
+  /// continua sendo a `/api/quote`, que entrega preço e série na mesma
+  /// resposta.
   Future<MarketQuote> _fetchBrapi(String rawSymbol, {String? token}) async {
     final symbol = rawSymbol.trim().toUpperCase().replaceAll('.SA', '');
     final chave = token ?? _brapiToken;
     final uri = Uri.https(
       'brapi.dev',
       '/api/quote/$symbol',
-      {
-        'range': '1mo',
-        'interval': '1d',
-        'fundamental': 'false',
-        if (chave != null) 'token': chave,
-      },
+      {'range': '1mo', 'interval': '1d', 'fundamental': 'false'},
     );
-    final response =
-        await _client.get(uri).timeout(_timeout);
+    // A chave vai no cabeçalho, e não na query: assim ela não aparece em log
+    // de proxy, histórico de URL nem relatório de erro.
+    final response = await _client.get(
+      uri,
+      headers: {
+        if (chave != null) 'Authorization': 'Bearer $chave',
+      },
+    ).timeout(_timeout);
     if (response.statusCode != 200) {
       throw QuoteException(
         'B3: resposta ${response.statusCode} para $symbol',
