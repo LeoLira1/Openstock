@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -238,4 +239,85 @@ void main() {
 
     expect(quote.previousClose, 101.0);
   });
+
+  test('consulta Yahoo e Finnhub ao mesmo tempo', () async {
+    final finnhubChegou = Completer<void>();
+    final service = QuoteService(client: MockClient((request) async {
+      final host = request.url.host;
+      if (host == 'brapi.dev') return http.Response('{"error":"token"}', 401);
+      if (host == 'finnhub.io') {
+        finnhubChegou.complete();
+        return http.Response(
+          jsonEncode({'c': 62.74, 'pc': 62.58, 't': 1789748820}),
+          200,
+        );
+      }
+      // O Yahoo só responde depois que a Finnhub for chamada. Enquanto as duas
+      // consultas eram sequenciais, esta espera nunca terminava.
+      await finnhubChegou.future;
+      return http.Response(_chartYahoo(), 200);
+    }));
+    service.configureFinnhub('chave-de-teste');
+
+    final quote = await service
+        .fetch(_prio3)
+        .timeout(const Duration(seconds: 5), onTimeout: () {
+      fail('as consultas continuam sequenciais');
+    });
+
+    expect(quote.current, 62.74);
+    expect(quote.previousClose, 63.29);
+  });
+
+  test('não repete a brapi em cada ativo depois de uma recusa', () async {
+    var idasABrapi = 0;
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host == 'brapi.dev') {
+        idasABrapi++;
+        return http.Response('{"error":"token"}', 401);
+      }
+      return http.Response(_chartYahoo(), 200);
+    }));
+
+    await service.fetch(_prio3);
+    await service.fetch(_prio3);
+    await service.fetch(_prio3);
+
+    // Uma carteira inteira gastava uma ida de rede por ativo para receber
+    // sempre o mesmo 401.
+    expect(idasABrapi, 1);
+  });
 }
+
+const _prio3 = InvestmentAsset(
+  symbol: 'PRIO3',
+  name: 'PRIO',
+  market: AssetMarket.b3,
+  currency: AssetCurrency.brl,
+  quantity: 267,
+  averagePrice: 42.38,
+);
+
+/// Série diária com o fechamento de 17/09/2026 e a parcial de 18/09/2026.
+String _chartYahoo() => jsonEncode({
+      'chart': {
+        'error': null,
+        'result': [
+          {
+            'meta': {
+              'regularMarketPrice': 62.78,
+              'chartPreviousClose': 63.29,
+              'regularMarketTime': 1789748820,
+            },
+            'timestamp': [1789603200, 1789689600],
+            'indicators': {
+              'quote': [
+                {
+                  'close': [63.29, 62.57]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    });
