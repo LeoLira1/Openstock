@@ -6,8 +6,15 @@ import '../models/investment_asset.dart';
 import '../models/history_models.dart';
 
 class QuoteException implements Exception {
-  const QuoteException(this.message);
+  const QuoteException(this.message, {this.status});
   final String message;
+
+  /// Código HTTP, quando a falha veio de uma resposta do provedor.
+  ///
+  /// Serve para separar "a chave não vale" de "a rede oscilou": só o primeiro
+  /// caso justifica parar de consultar o provedor.
+  final int? status;
+
   @override
   String toString() => message;
 }
@@ -15,12 +22,49 @@ class QuoteException implements Exception {
 class QuoteService {
   QuoteService({http.Client? client}) : _client = client ?? http.Client();
 
+  /// Uma consulta lenta atrasa a atualização inteira. O limite antigo de 15s
+  /// era somado a cada provedor e a cada ativo.
+  static const _timeout = Duration(seconds: 10);
+
+  /// A brapi sem token responde 401 para qualquer símbolo fora da lista de
+  /// demonstração. Insistir custava uma ida de rede por ativo, em toda
+  /// atualização, sempre para o mesmo erro.
+  static const _brapiPausa = Duration(minutes: 15);
+
   final http.Client _client;
   String? _finnhubToken;
+  String? _brapiToken;
+  DateTime? _brapiIndisponivelAte;
+
+  bool get _brapiDisponivel {
+    final ate = _brapiIndisponivelAte;
+    return ate == null || DateTime.now().isAfter(ate);
+  }
+
+  /// A brapi respondeu negando o acesso, e não apenas falhando.
+  static bool _brapiRecusou(Object error) {
+    if (error is! QuoteException) return false;
+    final status = error.status;
+    return status == 401 || status == 403 || status == 429;
+  }
 
   void configureFinnhub(String? token) {
     final clean = token?.trim() ?? '';
     _finnhubToken = clean.isEmpty ? null : clean;
+  }
+
+  void configureBrapi(String? token) {
+    final clean = token?.trim() ?? '';
+    _brapiToken = clean.isEmpty ? null : clean;
+    // Uma chave nova merece uma tentativa imediata, mesmo que a anterior tenha
+    // sido recusada há pouco.
+    _brapiIndisponivelAte = null;
+  }
+
+  /// Confere se a chave responde por um papel comum da B3.
+  Future<bool> validateBrapiToken(String token) async {
+    final quote = await _fetchBrapi('PETR4', token: token.trim());
+    return quote.current > 0;
   }
 
   Future<MarketQuote> fetch(InvestmentAsset asset) {
@@ -81,28 +125,33 @@ class QuoteService {
 
   Future<MarketQuote> _fetchBrazilian(String rawSymbol) async {
     final symbol = rawSymbol.trim().toUpperCase().replaceAll('.SA', '');
-    try {
-      return await _fetchBrapi(symbol);
-    } catch (_) {
-      // A consulta sem token da brapi é limitada a símbolos de demonstração.
-    }
-
-    MarketQuote? history;
-    try {
-      history = await _fetchYahoo('$symbol.SA');
-    } catch (_) {
-      // A Finnhub ainda pode fornecer o preço atual quando configurada.
-    }
-
-    if (_finnhubToken != null) {
+    if (_brapiDisponivel) {
       try {
-        final live = await _fetchFinnhub('$symbol.SA', _finnhubToken!);
-        return _mergeLiveWithHistory(live, history);
-      } catch (_) {
-        // Mantém a cotação histórica pública quando a chave não tem acesso à B3.
+        final quote = await _fetchBrapi(symbol);
+        _brapiIndisponivelAte = null;
+        return quote;
+      } catch (error) {
+        // Chave ausente, recusada ou no limite vale para a carteira inteira: a
+        // pausa evita gastar uma ida de rede por ativo para o mesmo erro. Uma
+        // falha de rede, por outro lado, pode não se repetir no próximo ativo.
+        if (_brapiRecusou(error)) {
+          _brapiIndisponivelAte = DateTime.now().add(_brapiPausa);
+        }
       }
     }
 
+    // As duas fontes são independentes: pedir uma depois da outra dobrava a
+    // latência de cada ativo sem melhorar o resultado.
+    final token = _finnhubToken;
+    final historyFuture = _opcional(_fetchYahoo('$symbol.SA'));
+    final liveFuture =
+        token == null ? null : _opcional(_fetchFinnhub('$symbol.SA', token));
+
+    final history = await historyFuture;
+    final live = liveFuture == null ? null : await liveFuture;
+
+    // Mantém a cotação histórica pública quando a chave não tem acesso à B3.
+    if (live != null) return _mergeLiveWithHistory(live, history);
     if (history != null) return history;
     throw QuoteException(
       'Cotação de $symbol indisponível na brapi, Finnhub e fonte alternativa',
@@ -115,19 +164,37 @@ class QuoteService {
   }
 
   Future<MarketQuote> _fetchInternational(String symbol) async {
-    MarketQuote? history;
+    final token = _finnhubToken;
+    if (token == null) return _fetchYahoo(symbol);
+
+    Object? liveError;
+    final historyFuture = _opcional(_fetchYahoo(symbol));
+    final liveFuture = _opcional(
+      _fetchFinnhub(symbol, token),
+      onError: (error) => liveError = error,
+    );
+
+    final history = await historyFuture;
+    final live = await liveFuture;
+
+    if (live != null) return _mergeLiveWithHistory(live, history);
+    if (history != null) return history;
+    throw liveError ?? QuoteException('Cotação indisponível para $symbol');
+  }
+
+  /// Aguarda uma consulta sem deixar a falha derrubar as outras em andamento.
+  ///
+  /// O `try` começa a rodar já na chamada, então o erro nunca escapa como
+  /// exceção não tratada enquanto o outro provedor ainda responde.
+  Future<MarketQuote?> _opcional(
+    Future<MarketQuote> consulta, {
+    void Function(Object error)? onError,
+  }) async {
     try {
-      history = await _fetchYahoo(symbol);
-    } catch (_) {
-      if (_finnhubToken == null) rethrow;
-    }
-    if (_finnhubToken == null) return history!;
-    try {
-      final live = await _fetchFinnhub(symbol, _finnhubToken!);
-      return _mergeLiveWithHistory(live, history);
-    } catch (_) {
-      if (history != null) return history;
-      rethrow;
+      return await consulta;
+    } catch (error) {
+      onError?.call(error);
+      return null;
     }
   }
 
@@ -162,7 +229,7 @@ class QuoteService {
     });
     late final http.Response response;
     try {
-      response = await _client.get(uri).timeout(const Duration(seconds: 15));
+      response = await _client.get(uri).timeout(_timeout);
     } catch (error) {
       throw QuoteException(
         'Falha de rede ao acessar finnhub.io (${error.runtimeType})',
@@ -200,17 +267,26 @@ class QuoteService {
     );
   }
 
-  Future<MarketQuote> _fetchBrapi(String rawSymbol) async {
+  Future<MarketQuote> _fetchBrapi(String rawSymbol, {String? token}) async {
     final symbol = rawSymbol.trim().toUpperCase().replaceAll('.SA', '');
+    final chave = token ?? _brapiToken;
     final uri = Uri.https(
       'brapi.dev',
       '/api/quote/$symbol',
-      {'range': '1mo', 'interval': '1d', 'fundamental': 'false'},
+      {
+        'range': '1mo',
+        'interval': '1d',
+        'fundamental': 'false',
+        if (chave != null) 'token': chave,
+      },
     );
     final response =
-        await _client.get(uri).timeout(const Duration(seconds: 15));
+        await _client.get(uri).timeout(_timeout);
     if (response.statusCode != 200) {
-      throw QuoteException('B3: resposta ${response.statusCode} para $symbol');
+      throw QuoteException(
+        'B3: resposta ${response.statusCode} para $symbol',
+        status: response.statusCode,
+      );
     }
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     final results = body['results'] as List<dynamic>?;
@@ -279,7 +355,7 @@ class QuoteService {
     final response = await _client.get(
       uri,
       headers: {'User-Agent': 'Mozilla/5.0 OpenStock/1.0'},
-    ).timeout(const Duration(seconds: 15));
+    ).timeout(_timeout);
     if (response.statusCode != 200) {
       throw QuoteException(
           'Mercado internacional: resposta ${response.statusCode}');

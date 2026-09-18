@@ -7,6 +7,7 @@ class SettingsService {
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
   static const _finnhubKey = 'finnhub_api_key';
+  static const _brapiKey = 'brapi_api_key';
   static const _tursoUrlKey = 'turso_database_url';
   static const _tursoTokenKey = 'turso_auth_token';
 
@@ -18,6 +19,17 @@ class SettingsService {
       await _storage.delete(key: _finnhubKey);
     } else {
       await _storage.write(key: _finnhubKey, value: clean);
+    }
+  }
+
+  Future<String?> loadBrapiKey() => _storage.read(key: _brapiKey);
+
+  Future<void> saveBrapiKey(String value) async {
+    final clean = value.trim();
+    if (clean.isEmpty) {
+      await _storage.delete(key: _brapiKey);
+    } else {
+      await _storage.write(key: _brapiKey, value: clean);
     }
   }
 

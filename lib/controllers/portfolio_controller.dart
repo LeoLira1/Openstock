@@ -56,6 +56,10 @@ class PortfolioController extends ChangeNotifier {
   bool finnhubValidated = false;
   String? finnhubConnectionMessage;
   String? _finnhubKey;
+  bool brapiConfigured = false;
+  bool brapiValidated = false;
+  String? brapiConnectionMessage;
+  String? _brapiKey;
 
   bool tursoConfigured = false;
   bool syncing = false;
@@ -227,6 +231,10 @@ class PortfolioController extends ChangeNotifier {
       _finnhubKey = finnhubKey;
       finnhubConfigured = finnhubKey != null && finnhubKey.isNotEmpty;
       _quotes.configureFinnhub(finnhubKey);
+      final brapiKey = await _settings.loadBrapiKey();
+      _brapiKey = brapiKey;
+      brapiConfigured = brapiKey != null && brapiKey.isNotEmpty;
+      _quotes.configureBrapi(brapiKey);
       final tursoCredentials = await _settings.loadTursoCredentials();
       if (tursoCredentials != null) {
         _turso.configure(tursoCredentials.url, tursoCredentials.token);
@@ -312,6 +320,48 @@ class PortfolioController extends ChangeNotifier {
     return null;
   }
 
+  Future<String?> saveBrapiKey(String key) async {
+    final clean = key.trim();
+    if (clean.isEmpty) {
+      await _settings.saveBrapiKey('');
+      _quotes.configureBrapi(null);
+      _brapiKey = null;
+      brapiConfigured = false;
+      brapiValidated = false;
+      brapiConnectionMessage = null;
+      notifyListeners();
+      return null;
+    }
+    try {
+      await _settings.saveBrapiKey(clean);
+      _brapiKey = clean;
+      _quotes.configureBrapi(clean);
+      brapiConfigured = true;
+    } catch (_) {
+      return 'Não foi possível guardar a chave no Android.';
+    }
+    await testBrapi();
+    await refresh();
+    return null;
+  }
+
+  Future<String> testBrapi() async {
+    final key = _brapiKey;
+    if (key == null || key.isEmpty) return 'Nenhuma chave foi configurada.';
+    try {
+      final valid = await _quotes.validateBrapiToken(key);
+      brapiValidated = valid;
+      brapiConnectionMessage = valid
+          ? 'Conexão validada com a brapi.'
+          : 'A brapi não confirmou essa chave.';
+    } catch (error) {
+      brapiValidated = false;
+      brapiConnectionMessage = error.toString();
+    }
+    notifyListeners();
+    return brapiConnectionMessage!;
+  }
+
   Future<String> testFinnhub() async {
     final key = _finnhubKey;
     if (key == null || key.isEmpty) return 'Nenhuma chave foi configurada.';
@@ -393,6 +443,12 @@ class PortfolioController extends ChangeNotifier {
     return succeeded;
   }
 
+  /// Cotações simultâneas por vez durante a atualização.
+  ///
+  /// Alto o bastante para diluir a latência de rede, baixo o bastante para não
+  /// estourar conexões nem esbarrar no limite dos provedores.
+  static const _janelaDeCotacoes = 6;
+
   Future<void> refresh({bool syncAfter = true}) async {
     if (refreshing || assets.isEmpty) return;
     refreshing = true;
@@ -400,36 +456,74 @@ class PortfolioController extends ChangeNotifier {
     notifyListeners();
     final errors = <String>[];
 
-    if (hasForeignAssets) {
+    // O dólar não depende de nenhuma cotação: buscá-lo antes do laço deixava a
+    // carteira inteira esperando por ele.
+    final dolarPendente = hasForeignAssets
+        ? () async {
+            try {
+              dollarQuote = await _quotes.fetchDollar();
+            } catch (_) {
+              if (dollarQuote == null) errors.add('dólar');
+            }
+          }()
+        : null;
+
+    final indices = <int>[
+      for (var i = 0; i < assets.length; i++)
+        if (assets[i].market != AssetMarket.manual && !assets[i].isFixedIncome)
+          i,
+    ];
+
+    // As cotações são independentes entre si. Uma de cada vez fazia a
+    // atualização custar a soma de todas as latências de rede; em uma carteira
+    // de quinze ativos isso são quinze idas completas enfileiradas. A janela
+    // limitada aproveita a espera sem abrir dezenas de conexões no celular.
+    final quotes = <int, MarketQuote>{};
+    final falhas = <int>{};
+    for (var inicio = 0; inicio < indices.length; inicio += _janelaDeCotacoes) {
+      final lote = indices.skip(inicio).take(_janelaDeCotacoes);
+      await Future.wait(lote.map((indice) async {
+        try {
+          quotes[indice] = await _quotes.fetch(assets[indice]);
+        } catch (_) {
+          falhas.add(indice);
+        }
+      }));
+    }
+
+    await dolarPendente;
+    if (dollarQuote != null && hasForeignAssets) {
       try {
-        dollarQuote = await _quotes.fetchDollar();
         await _database.saveDollarQuote(dollarQuote!);
       } catch (_) {
-        if (dollarQuote == null) errors.add('dólar');
+        // O valor em memória já vale para a tela; a gravação tenta de novo na
+        // próxima atualização.
       }
     }
 
-    for (var i = 0; i < assets.length; i++) {
-      final asset = assets[i];
-      if (asset.market == AssetMarket.manual || asset.isFixedIncome) continue;
-      try {
-        final quote = await _quotes.fetch(asset);
-        if (quote.priceDate != null) {
-          quoteDates[asset.syncKey] = quote.priceDate!;
-        }
-        if (asset.id != null) await _database.saveQuote(asset.id!, quote);
-        await _database.upsertHistory(
-          asset,
-          quote.history,
-          source: quote.historySource,
-        );
-        assets[i] = asset.copyWith(
-          currentPrice: quote.current,
-          previousClose: quote.previousClose,
-        );
-      } catch (_) {
-        errors.add(asset.symbol);
+    // As gravações ficam fora do trecho concorrente: o banco é sequencial de
+    // qualquer forma e a ordem dos ativos é preservada nas mensagens de erro.
+    for (final indice in indices) {
+      if (falhas.contains(indice)) {
+        errors.add(assets[indice].symbol);
+        continue;
       }
+      final quote = quotes[indice];
+      if (quote == null) continue;
+      final asset = assets[indice];
+      if (quote.priceDate != null) {
+        quoteDates[asset.syncKey] = quote.priceDate!;
+      }
+      if (asset.id != null) await _database.saveQuote(asset.id!, quote);
+      await _database.upsertHistory(
+        asset,
+        quote.history,
+        source: quote.historySource,
+      );
+      assets[indice] = asset.copyWith(
+        currentPrice: quote.current,
+        previousClose: quote.previousClose,
+      );
     }
 
     await refreshFixedIncome();
