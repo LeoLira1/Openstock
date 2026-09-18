@@ -42,16 +42,25 @@ class QuoteService {
   String? _finnhubToken;
   String? _brapiToken;
   DateTime? _brapiIndisponivelAte;
+  DateTime? _brapiLoteIndisponivelAte;
 
   bool get _brapiDisponivel {
     final ate = _brapiIndisponivelAte;
     return ate == null || DateTime.now().isAfter(ate);
   }
 
+  bool get _brapiLoteDisponivel {
+    if (!_brapiDisponivel) return false;
+    final ate = _brapiLoteIndisponivelAte;
+    return ate == null || DateTime.now().isAfter(ate);
+  }
+
+  static int? _statusDe(Object error) =>
+      error is QuoteException ? error.status : null;
+
   /// A brapi respondeu negando o acesso, e não apenas falhando.
   static bool _brapiRecusou(Object error) {
-    if (error is! QuoteException) return false;
-    final status = error.status;
+    final status = _statusDe(error);
     return status == 401 || status == 403 || status == 429;
   }
 
@@ -66,6 +75,7 @@ class QuoteService {
     // Uma chave nova merece uma tentativa imediata, mesmo que a anterior tenha
     // sido recusada há pouco.
     _brapiIndisponivelAte = null;
+    _brapiLoteIndisponivelAte = null;
   }
 
   /// Forma como um papel da B3 é identificado nas consultas e nos resultados.
@@ -87,7 +97,7 @@ class QuoteService {
   Future<Map<String, MarketQuote>> fetchBrazilianBatch(
     List<String> symbols,
   ) async {
-    if (_brapiToken == null || !_brapiDisponivel) return const {};
+    if (_brapiToken == null || !_brapiLoteDisponivel) return const {};
     final unicos = <String>{
       for (final symbol in symbols)
         if (normalizeB3Symbol(symbol).isNotEmpty) normalizeB3Symbol(symbol),
@@ -101,7 +111,17 @@ class QuoteService {
         cotacoes.addAll(await _fetchBrapiLote(lote));
         _brapiIndisponivelAte = null;
       } catch (error) {
-        if (_brapiRecusou(error)) {
+        // Pedir vários papéis de uma vez e pedir um só são recursos
+        // diferentes. Um plano que recusa o primeiro costuma atender o
+        // segundo, então a recusa do lote não pode derrubar a fonte inteira —
+        // era o que mandava a carteira para a consulta pública, onde a série
+        // pode vir com o fechamento da véspera faltando.
+        final status = _statusDe(error);
+        if (status == 403) {
+          _brapiLoteIndisponivelAte = DateTime.now().add(_brapiPausa);
+          break;
+        }
+        if (status == 401 || status == 429) {
           _brapiIndisponivelAte = DateTime.now().add(_brapiPausa);
           break;
         }

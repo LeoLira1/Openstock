@@ -531,6 +531,54 @@ void main() {
 
     expect(quote.previousClose, 63.29);
   });
+  test('lote recusado pelo plano não derruba a consulta individual', () async {
+    final caminhos = <String>[];
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host != 'brapi.dev') {
+        caminhos.add('yahoo');
+        return http.Response(_chartYahoo(), 200);
+      }
+      final tickers = request.url.path.replaceFirst('/api/quote/', '');
+      if (tickers.contains(',')) {
+        caminhos.add('lote');
+        // 403 é a resposta para um recurso fora do plano.
+        return http.Response('{"error":"recurso não incluído"}', 403);
+      }
+      caminhos.add('individual');
+      return http.Response(_quoteBrapi(), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+
+    final lote = await service.fetchBrazilianBatch(['PRIO3', 'PETR4']);
+    expect(lote, isEmpty);
+
+    // A carteira inteira ia para a fonte pública, onde a série pode vir sem o
+    // fechamento da véspera.
+    final quote = await service.fetch(_prio3);
+    expect(quote.historySource, 'brapi');
+    expect(quote.previousClose, 63.29);
+    expect(caminhos, ['lote', 'individual']);
+  });
+
+  test('chave recusada no lote pausa a fonte inteira', () async {
+    final caminhos = <String>[];
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host != 'brapi.dev') {
+        caminhos.add('yahoo');
+        return http.Response(_chartYahoo(), 200);
+      }
+      caminhos.add('brapi');
+      return http.Response('{"error":"token inválido"}', 401);
+    }));
+    service.configureBrapi('chave-vencida');
+
+    await service.fetchBrazilianBatch(['PRIO3', 'PETR4']);
+    await service.fetch(_prio3);
+
+    // Sem chave válida a consulta individual também não passaria: insistir só
+    // gastaria uma ida de rede por ativo.
+    expect(caminhos, ['brapi', 'yahoo']);
+  });
 }
 
 const _prio3 = InvestmentAsset(
