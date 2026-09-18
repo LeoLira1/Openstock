@@ -137,8 +137,10 @@ As identidades sincronizadas são lógicas e estáveis, por exemplo `b3:PRIO3` e
 
 ## Fontes de cotação
 
-- B3 atual: [brapi.dev](https://brapi.dev/), com fallback `.SA` para a consulta
-  pública já usada pelo projeto;
+- B3 atual: [brapi.dev](https://brapi.dev/), que devolve preço e série diária
+  na mesma consulta. Com uma chave gratuita configurada nos ajustes, cada ativo
+  brasileiro custa uma única ida de rede; sem ela a brapi só atende símbolos de
+  demonstração e o aplicativo recorre à consulta pública `.SA`;
 - Estados Unidos atual: Finnhub quando configurada, com a consulta pública já
   existente como contingência;
 - histórico diário B3/EUA e USD/BRL: endpoint público de gráficos do Yahoo
@@ -175,7 +177,7 @@ com `CREATE TABLE/INDEX IF NOT EXISTS`.
 - exclusões usam tombstone (`deleted_at`), sem apagar imediatamente o registro
   sincronizado;
 - histórico e snapshots usam chaves naturais únicas, evitando duplicidade;
-- chaves Finnhub e Turso são segredos locais e não são sincronizadas.
+- chaves brapi, Finnhub e Turso são segredos locais e não são sincronizadas.
 
 ## Banco local e migração
 

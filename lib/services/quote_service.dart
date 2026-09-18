@@ -6,8 +6,15 @@ import '../models/investment_asset.dart';
 import '../models/history_models.dart';
 
 class QuoteException implements Exception {
-  const QuoteException(this.message);
+  const QuoteException(this.message, {this.status});
   final String message;
+
+  /// Código HTTP, quando a falha veio de uma resposta do provedor.
+  ///
+  /// Serve para separar "a chave não vale" de "a rede oscilou": só o primeiro
+  /// caso justifica parar de consultar o provedor.
+  final int? status;
+
   @override
   String toString() => message;
 }
@@ -26,6 +33,7 @@ class QuoteService {
 
   final http.Client _client;
   String? _finnhubToken;
+  String? _brapiToken;
   DateTime? _brapiIndisponivelAte;
 
   bool get _brapiDisponivel {
@@ -33,9 +41,30 @@ class QuoteService {
     return ate == null || DateTime.now().isAfter(ate);
   }
 
+  /// A brapi respondeu negando o acesso, e não apenas falhando.
+  static bool _brapiRecusou(Object error) {
+    if (error is! QuoteException) return false;
+    final status = error.status;
+    return status == 401 || status == 403 || status == 429;
+  }
+
   void configureFinnhub(String? token) {
     final clean = token?.trim() ?? '';
     _finnhubToken = clean.isEmpty ? null : clean;
+  }
+
+  void configureBrapi(String? token) {
+    final clean = token?.trim() ?? '';
+    _brapiToken = clean.isEmpty ? null : clean;
+    // Uma chave nova merece uma tentativa imediata, mesmo que a anterior tenha
+    // sido recusada há pouco.
+    _brapiIndisponivelAte = null;
+  }
+
+  /// Confere se a chave responde por um papel comum da B3.
+  Future<bool> validateBrapiToken(String token) async {
+    final quote = await _fetchBrapi('PETR4', token: token.trim());
+    return quote.current > 0;
   }
 
   Future<MarketQuote> fetch(InvestmentAsset asset) {
@@ -101,10 +130,13 @@ class QuoteService {
         final quote = await _fetchBrapi(symbol);
         _brapiIndisponivelAte = null;
         return quote;
-      } catch (_) {
-        // A consulta sem token da brapi é limitada a símbolos de demonstração.
-        // A pausa evita repetir a mesma ida de rede para os demais ativos.
-        _brapiIndisponivelAte = DateTime.now().add(_brapiPausa);
+      } catch (error) {
+        // Chave ausente, recusada ou no limite vale para a carteira inteira: a
+        // pausa evita gastar uma ida de rede por ativo para o mesmo erro. Uma
+        // falha de rede, por outro lado, pode não se repetir no próximo ativo.
+        if (_brapiRecusou(error)) {
+          _brapiIndisponivelAte = DateTime.now().add(_brapiPausa);
+        }
       }
     }
 
@@ -235,17 +267,26 @@ class QuoteService {
     );
   }
 
-  Future<MarketQuote> _fetchBrapi(String rawSymbol) async {
+  Future<MarketQuote> _fetchBrapi(String rawSymbol, {String? token}) async {
     final symbol = rawSymbol.trim().toUpperCase().replaceAll('.SA', '');
+    final chave = token ?? _brapiToken;
     final uri = Uri.https(
       'brapi.dev',
       '/api/quote/$symbol',
-      {'range': '1mo', 'interval': '1d', 'fundamental': 'false'},
+      {
+        'range': '1mo',
+        'interval': '1d',
+        'fundamental': 'false',
+        if (chave != null) 'token': chave,
+      },
     );
     final response =
         await _client.get(uri).timeout(_timeout);
     if (response.statusCode != 200) {
-      throw QuoteException('B3: resposta ${response.statusCode} para $symbol');
+      throw QuoteException(
+        'B3: resposta ${response.statusCode} para $symbol',
+        status: response.statusCode,
+      );
     }
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     final results = body['results'] as List<dynamic>?;

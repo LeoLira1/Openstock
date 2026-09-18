@@ -56,6 +56,10 @@ class PortfolioController extends ChangeNotifier {
   bool finnhubValidated = false;
   String? finnhubConnectionMessage;
   String? _finnhubKey;
+  bool brapiConfigured = false;
+  bool brapiValidated = false;
+  String? brapiConnectionMessage;
+  String? _brapiKey;
 
   bool tursoConfigured = false;
   bool syncing = false;
@@ -227,6 +231,10 @@ class PortfolioController extends ChangeNotifier {
       _finnhubKey = finnhubKey;
       finnhubConfigured = finnhubKey != null && finnhubKey.isNotEmpty;
       _quotes.configureFinnhub(finnhubKey);
+      final brapiKey = await _settings.loadBrapiKey();
+      _brapiKey = brapiKey;
+      brapiConfigured = brapiKey != null && brapiKey.isNotEmpty;
+      _quotes.configureBrapi(brapiKey);
       final tursoCredentials = await _settings.loadTursoCredentials();
       if (tursoCredentials != null) {
         _turso.configure(tursoCredentials.url, tursoCredentials.token);
@@ -310,6 +318,48 @@ class PortfolioController extends ChangeNotifier {
     await testFinnhub();
     await refresh();
     return null;
+  }
+
+  Future<String?> saveBrapiKey(String key) async {
+    final clean = key.trim();
+    if (clean.isEmpty) {
+      await _settings.saveBrapiKey('');
+      _quotes.configureBrapi(null);
+      _brapiKey = null;
+      brapiConfigured = false;
+      brapiValidated = false;
+      brapiConnectionMessage = null;
+      notifyListeners();
+      return null;
+    }
+    try {
+      await _settings.saveBrapiKey(clean);
+      _brapiKey = clean;
+      _quotes.configureBrapi(clean);
+      brapiConfigured = true;
+    } catch (_) {
+      return 'Não foi possível guardar a chave no Android.';
+    }
+    await testBrapi();
+    await refresh();
+    return null;
+  }
+
+  Future<String> testBrapi() async {
+    final key = _brapiKey;
+    if (key == null || key.isEmpty) return 'Nenhuma chave foi configurada.';
+    try {
+      final valid = await _quotes.validateBrapiToken(key);
+      brapiValidated = valid;
+      brapiConnectionMessage = valid
+          ? 'Conexão validada com a brapi.'
+          : 'A brapi não confirmou essa chave.';
+    } catch (error) {
+      brapiValidated = false;
+      brapiConnectionMessage = error.toString();
+    }
+    notifyListeners();
+    return brapiConnectionMessage!;
   }
 
   Future<String> testFinnhub() async {

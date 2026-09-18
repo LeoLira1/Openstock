@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -287,6 +288,79 @@ void main() {
     // sempre o mesmo 401.
     expect(idasABrapi, 1);
   });
+  test('com chave, a brapi resolve o ativo em uma única consulta', () async {
+    final hosts = <String>[];
+    Uri? consultaBrapi;
+    final service = QuoteService(client: MockClient((request) async {
+      hosts.add(request.url.host);
+      if (request.url.host == 'brapi.dev') {
+        consultaBrapi = request.url;
+        return http.Response(_quoteBrapi(), 200);
+      }
+      return http.Response(_chartYahoo(), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+    service.configureFinnhub('chave-finnhub');
+
+    final quote = await service.fetch(_prio3);
+
+    expect(consultaBrapi?.queryParameters['token'], 'chave-brapi');
+    // Sem chave seriam duas fontes públicas para montar o mesmo dado.
+    expect(hosts, ['brapi.dev']);
+    expect(quote.current, 62.74);
+    expect(quote.previousClose, 63.29);
+    expect(quote.historySource, 'brapi');
+  });
+
+  test('chave recusada não derruba a cotação', () async {
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host == 'brapi.dev') {
+        return http.Response('{"error":"chave inválida"}', 401);
+      }
+      return http.Response(_chartYahoo(), 200);
+    }));
+    service.configureBrapi('chave-vencida');
+
+    final quote = await service.fetch(_prio3);
+
+    expect(quote.current, 62.78);
+    expect(quote.previousClose, 63.29);
+    expect(quote.historySource, 'yahoo');
+  });
+
+  test('falha de rede na brapi não pausa a fonte', () async {
+    var idasABrapi = 0;
+    final service = QuoteService(client: MockClient((request) async {
+      if (request.url.host == 'brapi.dev') {
+        idasABrapi++;
+        if (idasABrapi == 1) throw const SocketException('sem rede');
+        return http.Response(_quoteBrapi(), 200);
+      }
+      return http.Response(_chartYahoo(), 200);
+    }));
+    service.configureBrapi('chave-brapi');
+
+    await service.fetch(_prio3);
+    final quote = await service.fetch(_prio3);
+
+    // Uma oscilação momentânea não pode custar quinze minutos da melhor fonte.
+    expect(idasABrapi, 2);
+    expect(quote.historySource, 'brapi');
+  });
+
+  test('validação da chave brapi consulta um papel comum', () async {
+    Uri? consulta;
+    final service = QuoteService(client: MockClient((request) async {
+      consulta = request.url;
+      return http.Response(_quoteBrapi(), 200);
+    }));
+
+    final valido = await service.validateBrapiToken('  chave-brapi  ');
+
+    expect(valido, isTrue);
+    expect(consulta?.path, '/api/quote/PETR4');
+    expect(consulta?.queryParameters['token'], 'chave-brapi');
+  });
 }
 
 const _prio3 = InvestmentAsset(
@@ -320,4 +394,19 @@ String _chartYahoo() => jsonEncode({
           }
         ]
       }
+    });
+
+/// Resposta da brapi com preço e série diária na mesma consulta.
+String _quoteBrapi() => jsonEncode({
+      'results': [
+        {
+          'regularMarketPrice': 62.74,
+          'regularMarketPreviousClose': 63.29,
+          'regularMarketTime': 1789748820,
+          'historicalDataPrice': [
+            {'date': 1789603200, 'close': 63.29},
+            {'date': 1789689600, 'close': 62.57},
+          ],
+        }
+      ]
     });

@@ -540,6 +540,74 @@ class SettingsScreen extends StatelessWidget {
                   const Icon(Icons.key_rounded, color: _green),
                   const SizedBox(width: 10),
                   const Expanded(
+                    child: Text('brapi',
+                        style: TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.w800)),
+                  ),
+                  _StatusChip(
+                    active: controller.brapiConfigured,
+                    validated: controller.brapiValidated,
+                  ),
+                ]),
+                const SizedBox(height: 12),
+                const Text(
+                  'Fonte nativa da B3, com preço e série diária na mesma consulta. '
+                  'Sem chave, cada ativo brasileiro precisa de duas fontes públicas '
+                  'para montar a mesma informação. A chave gratuita fica protegida '
+                  'no armazenamento seguro do Android.',
+                  style: TextStyle(color: _muted, height: 1.45),
+                ),
+                const SizedBox(height: 15),
+                if (controller.brapiConnectionMessage != null) ...[
+                  _Notice(text: controller.brapiConnectionMessage!),
+                  const SizedBox(height: 12),
+                ],
+                Row(children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _configureBrapi(context, controller),
+                      icon: const Icon(Icons.settings_rounded),
+                      label: Text(controller.brapiConfigured
+                          ? 'Trocar chave'
+                          : 'Configurar chave'),
+                    ),
+                  ),
+                  if (controller.brapiConfigured) ...[
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Testar conexão',
+                      onPressed: () async {
+                        final result = await controller.testBrapi();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context)
+                              .showSnackBar(SnackBar(content: Text(result)));
+                        }
+                      },
+                      icon: const Icon(Icons.wifi_tethering_rounded),
+                    ),
+                    IconButton(
+                      tooltip: 'Remover chave',
+                      onPressed: () => _removeBrapi(context, controller),
+                      icon:
+                          const Icon(Icons.delete_outline_rounded, color: _red),
+                    ),
+                  ],
+                ]),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  const Icon(Icons.key_rounded, color: _green),
+                  const SizedBox(width: 10),
+                  const Expanded(
                     child: Text('Finnhub',
                         style: TextStyle(
                             fontSize: 18, fontWeight: FontWeight.w800)),
@@ -692,7 +760,7 @@ class SettingsScreen extends StatelessWidget {
                     icon: Icons.public_rounded,
                     title: 'Mercados',
                     text:
-                        'Finnhub para ativos internacionais, brapi.dev para B3 e consulta pública para histórico e câmbio.'),
+                        'brapi.dev para a B3, Finnhub para ativos internacionais e consulta pública para histórico e câmbio.'),
                 _InfoLine(
                     icon: Icons.schedule_rounded,
                     title: 'Atenção às cotações',
@@ -1708,6 +1776,100 @@ Future<void> _confirmDelete(BuildContext context,
     ),
   );
   if (confirmed == true) await controller.deleteAsset(asset);
+}
+
+Future<void> _configureBrapi(
+    BuildContext context, PortfolioController controller) async {
+  final key = TextEditingController();
+  var saving = false;
+  await showDialog<void>(
+    context: context,
+    barrierDismissible: !saving,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: const Text('Chave brapi'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Crie uma chave gratuita em brapi.dev e cole abaixo. Ela será validada antes de ser salva.',
+              style: TextStyle(color: _muted, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: key,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(
+                labelText: 'API key',
+                prefixIcon: Icon(Icons.key_rounded),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: saving ? null : () => Navigator.pop(dialogContext),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: saving
+                ? null
+                : () async {
+                    if (key.text.trim().isEmpty) return;
+                    setDialogState(() => saving = true);
+                    final error = await controller.saveBrapiKey(key.text);
+                    if (!dialogContext.mounted) return;
+                    if (error == null) {
+                      Navigator.pop(dialogContext);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(controller.brapiConnectionMessage ??
+                              'Chave salva. A B3 passa a usar a brapi.'),
+                        ),
+                      );
+                    } else {
+                      setDialogState(() => saving = false);
+                      ScaffoldMessenger.of(context)
+                          .showSnackBar(SnackBar(content: Text(error)));
+                    }
+                  },
+            child: saving
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Validar e salvar'),
+          ),
+        ],
+      ),
+    ),
+  );
+  key.dispose();
+}
+
+Future<void> _removeBrapi(
+    BuildContext context, PortfolioController controller) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Remover chave brapi?'),
+      content: const Text(
+          'Os ativos da B3 voltam a ser montados a partir das fontes públicas, '
+          'com mais uma consulta por ativo em cada atualização.'),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar')),
+        FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remover')),
+      ],
+    ),
+  );
+  if (confirmed == true) await controller.saveBrapiKey('');
 }
 
 Future<void> _configureFinnhub(
