@@ -37,6 +37,22 @@ void main() {
       expect(result, 64.19);
     });
 
+    test('não confunde candle de hoje em UTC com fechamento de ontem', () {
+      final result = resolvePreviousClose(
+        history: [
+          PricePoint(DateTime.utc(2026, 9, 17), 63.29),
+          PricePoint(DateTime.utc(2026, 9, 18), 62.57),
+        ],
+        current: 62.78,
+        providerPrevious: 63.29,
+        currentPriceDate: DateTime.utc(2026, 9, 18, 15, 14),
+        // O mesmo instante em um aparelho configurado para o Brasil.
+        now: DateTime.parse('2026-09-18T12:14:00-03:00'),
+      );
+
+      expect(result, 63.29);
+    });
+
     test('recorre ao metadado quando não há histórico', () {
       final result = resolvePreviousClose(
         history: const [],
