@@ -381,6 +381,45 @@ class DatabaseService {
     );
   }
 
+  /// Monta o patrimônio de [date] usando, para cada ativo, o registro mais
+  /// recente disponível até aquele dia. Isso permite combinar mercados com
+  /// horários diferentes sem inventar uma cotação para o calendário do celular.
+  Future<PortfolioSnapshot?> buildPortfolioSnapshotAt(DateTime date) async {
+    final db = await database;
+    final day = dateKey(date);
+    final rows = await db.rawQuery('''
+      SELECT s.asset_key, s.value_brl, s.cost_brl
+      FROM asset_daily_snapshots s
+      INNER JOIN assets a
+        ON a.stable_key = s.asset_key
+       AND a.deleted_at IS NULL
+      INNER JOIN (
+        SELECT asset_key, MAX(snapshot_date) AS snapshot_date
+        FROM asset_daily_snapshots
+        WHERE snapshot_date <= ?
+        GROUP BY asset_key
+      ) latest
+        ON latest.asset_key = s.asset_key
+       AND latest.snapshot_date = s.snapshot_date
+    ''', [day]);
+    if (rows.isEmpty) return null;
+    final total = rows.fold<double>(
+      0,
+      (sum, row) => sum + (row['value_brl'] as num).toDouble(),
+    );
+    final cost = rows.fold<double>(
+      0,
+      (sum, row) => sum + (row['cost_brl'] as num).toDouble(),
+    );
+    await savePortfolioSnapshotAt(date, total, cost);
+    return PortfolioSnapshot(
+      date: DateTime(date.year, date.month, date.day),
+      totalBrl: total,
+      costBrl: cost,
+      updatedAt: DateTime.now().toUtc(),
+    );
+  }
+
   Future<void> saveAssetDailySnapshotAt({
     required String assetKey,
     required DateTime date,
@@ -456,6 +495,19 @@ class DatabaseService {
               updatedAt: DateTime.parse(row['updated_at'] as String),
             ))
         .toList();
+  }
+
+  Future<bool> hasAssetDailySnapshotAt(
+    String assetKey,
+    DateTime date,
+  ) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''SELECT 1 FROM asset_daily_snapshots
+         WHERE asset_key = ? AND snapshot_date = ? LIMIT 1''',
+      [assetKey, dateKey(date)],
+    );
+    return rows.isNotEmpty;
   }
 
   Future<void> upsertHistory(

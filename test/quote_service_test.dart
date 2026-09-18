@@ -58,7 +58,10 @@ void main() {
             'error': null,
             'result': [
               {
-                'meta': {'regularMarketPrice': 44.0},
+                'meta': {
+                  'regularMarketPrice': 44.0,
+                  'regularMarketTime': 1789344000,
+                },
                 'timestamp': [1789344000],
                 'indicators': {
                   'quote': [
@@ -89,5 +92,51 @@ void main() {
     expect(requested.queryParameters['range'], '5y');
     expect(requested.queryParameters['interval'], '1d');
     expect(history.single.value, 44);
+  });
+
+  test('cotação guarda a data real do preço atual', () async {
+    const marketEpoch = 1789661400;
+    final service = QuoteService(client: MockClient((request) async {
+      return http.Response(
+        jsonEncode({
+          'chart': {
+            'error': null,
+            'result': [
+              {
+                'meta': {
+                  'regularMarketPrice': 100.0,
+                  'chartPreviousClose': 99.0,
+                  'regularMarketTime': marketEpoch,
+                },
+                'timestamp': [marketEpoch],
+                'indicators': {
+                  'quote': [
+                    {
+                      'close': [100.0]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }),
+        200,
+      );
+    }));
+    const asset = InvestmentAsset(
+      symbol: 'AMD',
+      name: 'AMD',
+      market: AssetMarket.usa,
+      currency: AssetCurrency.usd,
+      quantity: 1,
+      averagePrice: 90,
+    );
+
+    final quote = await service.fetch(asset);
+
+    expect(
+      quote.priceDate,
+      DateTime.fromMillisecondsSinceEpoch(marketEpoch * 1000),
+    );
   });
 }
