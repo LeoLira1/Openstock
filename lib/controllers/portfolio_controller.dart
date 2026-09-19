@@ -539,6 +539,7 @@ class PortfolioController extends ChangeNotifier {
       final quote = quotes[indice];
       if (quote == null) continue;
       final asset = assets[indice];
+      final pregaoConhecido = quoteDates[asset.syncKey];
       if (quote.priceDate != null) {
         quoteDates[asset.syncKey] = quote.priceDate!;
       }
@@ -550,7 +551,7 @@ class PortfolioController extends ChangeNotifier {
       );
       assets[indice] = asset.copyWith(
         currentPrice: quote.current,
-        previousClose: quote.previousClose,
+        previousClose: fechamentoAnterior(asset, quote, pregaoConhecido),
       );
     }
 
@@ -617,6 +618,32 @@ class PortfolioController extends ChangeNotifier {
     refreshing = false;
     notifyListeners();
     if (syncAfter && tursoConfigured) await synchronize(silent: true);
+  }
+
+  /// O fechamento da véspera é um fato do pregão: uma vez apurado, não se perde.
+  ///
+  /// Quando a fonte não sabe informá-lo — a consulta pública às vezes publica o
+  /// pregão anterior sem o fechamento dele —, ela devolve o próprio preço e a
+  /// variação do dia vira zero. Como as fontes se alternam entre uma
+  /// atualização e outra, conforme a chave, o limite de requisições ou a
+  /// disponibilidade de cada uma, o resultado do dia mudava a cada toque no
+  /// botão sem que preço nenhum tivesse mudado.
+  ///
+  /// O valor guardado só vale dentro do mesmo pregão: em um dia novo a véspera
+  /// é outra, e insistir no valor antigo mediria a variação contra o dia
+  /// errado — o erro que este aplicativo já cometeu por outro caminho.
+  @visibleForTesting
+  double? fechamentoAnterior(
+    InvestmentAsset asset,
+    MarketQuote quote,
+    DateTime? pregaoConhecido,
+  ) {
+    if (quote.previousClose != quote.current) return quote.previousClose;
+    final guardado = asset.previousClose;
+    if (guardado == null) return quote.previousClose;
+    final mesmoPregao = quote.priceDate != null &&
+        _sameDay(pregaoConhecido, quote.priceDate!);
+    return mesmoPregao ? guardado : quote.previousClose;
   }
 
   /// Cotações da B3 obtidas de uma vez só, indexadas pela posição do ativo.
