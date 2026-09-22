@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' show DateFormat, NumberFormat;
 
 import '../models/history_models.dart';
-import '../models/investment_asset.dart';
 import '../models/investment_transaction.dart';
 import '../models/tracking_analytics.dart';
 
@@ -14,22 +13,21 @@ const _muted = Color(0xFF93A4BC);
 
 /// Janelas do gráfico da carteira, no espírito das cotações do Google.
 enum PortfolioChartRange {
-  fiveDays('5D', 'nos últimos 5 pregões'),
-  oneMonth('1M', 'no último mês'),
-  sixMonths('6M', 'nos últimos 6 meses'),
+  fiveDays('5D', 'em 5 dias'),
+  oneMonth('1M', 'em 1 mês'),
+  sixMonths('6M', 'em 6 meses'),
   yearToDate('YTD', 'no ano'),
-  oneYear('1A', 'no último ano'),
+  oneYear('1A', 'em 1 ano'),
   maximum('Máx', 'desde o início');
 
   const PortfolioChartRange(this.label, this.description);
   final String label;
   final String description;
 
-  DateTime? since(List<PortfolioSnapshot> ordered, DateTime now) =>
-      switch (this) {
+  DateTime? since(List<DateTime> dates, DateTime now) => switch (this) {
         // Cinco registros: o gráfico começa no pregão anterior a eles.
         PortfolioChartRange.fiveDays =>
-          ordered.length > 5 ? ordered[ordered.length - 5].date : null,
+          dates.length > 5 ? dates[dates.length - 5] : null,
         PortfolioChartRange.oneMonth =>
           DateTime(now.year, now.month - 1, now.day),
         PortfolioChartRange.sixMonths =>
@@ -51,9 +49,9 @@ enum _ChartUnit { money, percent }
 class PortfolioPerformanceCard extends StatefulWidget {
   const PortfolioPerformanceCard({
     super.key,
-    required this.snapshots,
-    required this.transactions,
-    required this.entries,
+    required this.assetSnapshots,
+    required this.transactionsByAsset,
+    required this.transactionsVersion,
     required this.currentValue,
     required this.dayResult,
     required this.dayPercent,
@@ -61,9 +59,12 @@ class PortfolioPerformanceCard extends StatefulWidget {
     required this.footer,
   });
 
-  final List<PortfolioSnapshot> snapshots;
-  final List<InvestmentTransaction> transactions;
-  final List<PricePoint> entries;
+  final Map<String, List<AssetDailySnapshot>> assetSnapshots;
+  final Map<String, List<InvestmentTransaction>> transactionsByAsset;
+
+  /// Lista trocada a cada recarga das operações; só serve para saber quando
+  /// recalcular, já que o mapa de operações é reaproveitado.
+  final Object transactionsVersion;
   final double currentValue;
   final double dayResult;
   final double dayPercent;
@@ -86,21 +87,19 @@ class _PortfolioPerformanceCardState extends State<PortfolioPerformanceCard> {
   List<PortfolioPerformancePoint> get points {
     final key = Object.hash(
       range,
-      identityHashCode(widget.snapshots),
-      identityHashCode(widget.transactions),
-      identityHashCode(widget.entries),
-      widget.snapshots.length,
-      widget.transactions.length,
+      identityHashCode(widget.assetSnapshots),
+      identityHashCode(widget.transactionsVersion),
     );
     if (_cacheKey == key && _cache != null) return _cache!;
-    final ordered = [...widget.snapshots]
-      ..sort((a, b) => a.date.compareTo(b.date));
-    _cache = calculatePortfolioPerformance(
-      snapshots: ordered,
-      transactions: widget.transactions,
-      entries: widget.entries,
-      since: range.since(ordered, DateTime.now()),
+    final all = calculatePortfolioPerformance(
+      assetSnapshots: widget.assetSnapshots,
+      transactionsByAsset: widget.transactionsByAsset,
     );
+    final since = range.since(
+      [for (final point in all) point.date],
+      DateTime.now(),
+    );
+    _cache = since == null ? all : rebasePerformance(all, since);
     _cacheKey = key;
     return _cache!;
   }
@@ -366,7 +365,7 @@ class _ChartGeometry {
   final Size size;
 
   final left = 0.0;
-  final right = 58.0;
+  final right = 70.0;
   final bottom = 20.0;
   final top = 8.0;
 
@@ -533,7 +532,7 @@ class _ChartPainter extends CustomPainter {
 
   String _axisLabel(double value) {
     if (unit == _ChartUnit.percent) {
-      return '${value >= 0 ? '+' : ''}'
+      return '${value >= 0.05 ? '+' : ''}'
           '${value.toStringAsFixed(1).replaceAll('.', ',')}%';
     }
     final abs = value.abs();
@@ -543,9 +542,10 @@ class _ChartPainter extends CustomPainter {
             ? '+'
             : '';
     if (abs >= 1000) {
-      return '$sign${(abs / 1000).toStringAsFixed(abs >= 10000 ? 0 : 1).replaceAll('.', ',')} mil';
+      final digits = abs >= 10000 ? 0 : 1;
+      return '${sign}R\$ ${(abs / 1000).toStringAsFixed(digits).replaceAll('.', ',')} mil';
     }
-    return '$sign${abs.toStringAsFixed(0)}';
+    return '${sign}R\$ ${abs.toStringAsFixed(0)}';
   }
 
   void _text(

@@ -311,9 +311,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
         children: [
           PortfolioPerformanceCard(
-            snapshots: controller.portfolioTimeline,
-            transactions: controller.allTransactions,
-            entries: controller.trackingEntryPoints,
+            assetSnapshots: controller.assetSnapshotsByKey,
+            transactionsByAsset: controller.transactionsByAsset,
+            transactionsVersion: controller.allTransactions,
             currentValue: controller.totalValue,
             dayResult: controller.dayResult,
             dayPercent: controller.dayPercent,
