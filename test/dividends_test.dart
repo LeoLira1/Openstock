@@ -26,34 +26,52 @@ DividendAnnouncement _ann(DateTime payment, DateTime? record,
     );
 
 void main() {
-  test('lê cashDividends da brapi no dia da B3 e descarta repetidos', () {
-    final row = {
-      'paymentDate': '2026-12-21T03:00:00.000Z',
-      'rate': 0.471567,
-      'label': 'DIVIDENDO',
-      'lastDatePrior': '2026-08-21T03:00:00.000Z',
-      'exDate': '2026-08-24T03:00:00.000Z',
+  test('lê os proventos da B3 só da classe do papel', () {
+    Map<String, String> row(String isin, String label, String rate,
+            String payment, String record) =>
+        {
+          'isinCode': isin,
+          'label': label,
+          'rate': rate,
+          'paymentDate': payment,
+          'lastDatePrior': record,
+        };
+    final company = {
+      'cashDividends': [
+        row('BRPETRACNPR6', 'JRS CAP PROPRIO', '0,67407131000', '23/11/2026',
+            '21/08/2026'),
+        row('BRPETRACNPR6', 'JRS CAP PROPRIO', '0,67407131000', '23/11/2026',
+            '21/08/2026'),
+        row('BRPETRACNOR9', 'DIVIDENDO', '0,47', '21/12/2026', '21/08/2026'),
+        row('BRPETRACNPR6', 'DIVIDENDO', '1.234,5', '21/12/2026', '21/08/2026'),
+        row('BRPETRACNPR6', 'DIVIDENDO', '0,1', '', '21/08/2026'),
+      ],
     };
-    final parsed = parseBrapiDividends('PETR4', {
-      'dividendsData': {
-        'cashDividends': [
-          row,
-          row,
-          {...row, 'label': 'JCP', 'rate': 0.2},
-          {...row, 'rate': null},
-          {...row, 'paymentDate': null},
-        ],
-      },
-    });
 
-    expect(parsed, hasLength(2));
-    expect(parsed.first.paymentDate, DateTime(2026, 12, 21));
-    expect(parsed.first.recordDate, DateTime(2026, 8, 21));
-    expect(parsed.last.displayLabel, 'JCP');
+    final pn = parseB3Dividends('PETR4', company);
+    expect(pn, hasLength(2));
+    expect(pn.first.displayLabel, 'JCP');
+    expect(pn.first.rate, closeTo(0.67407131, 1e-9));
+    expect(pn.first.paymentDate, DateTime(2026, 11, 23));
+    expect(pn.first.recordDate, DateTime(2026, 8, 21));
+    expect(pn.last.rate, 1234.5);
     expect(
-      DividendAnnouncement.fromJson(parsed.first.toJson()).paymentDate,
-      DateTime(2026, 12, 21),
+      DividendAnnouncement.fromJson(pn.first.toJson()).paymentDate,
+      DateTime(2026, 11, 23),
     );
+
+    final on = parseB3Dividends('PETR3', company);
+    expect(on.single.displayLabel, 'Dividendo');
+  });
+
+  test('classe do ISIN: ON, PN, unit e FII', () {
+    expect(b3IsinMatchesSymbol('BRBBASACNOR3', 'BBAS3'), isTrue);
+    expect(b3IsinMatchesSymbol('BRBBASA04OR8', 'BBAS3'), isFalse);
+    expect(b3IsinMatchesSymbol('BRALUPCDAM15', 'ALUP11'), isTrue);
+    expect(b3IsinMatchesSymbol('BRALUPACNOR8', 'ALUP11'), isFalse);
+    expect(b3IsinMatchesSymbol('BRMXRFCTF008', 'MXRF11'), isTrue);
+    expect(b3IsinMatchesSymbol('BRMXRFR27M13', 'MXRF11'), isFalse);
+    expect(b3IsinMatchesSymbol('BRITSAACNPR7', 'ITSA4F'), isTrue);
   });
 
   test('usa a quantidade da data-com e ignora pagamentos já feitos', () {
