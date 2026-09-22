@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/dividends.dart';
 import '../models/investment_asset.dart';
 import '../models/history_models.dart';
 
@@ -421,13 +422,40 @@ class QuoteService {
     return quote;
   }
 
-  Future<http.Response> _brapiGet(String tickers, {String? token}) async {
-    final chave = token ?? _brapiToken;
-    final uri = Uri.https(
-      'brapi.dev',
-      '/api/quote/$tickers',
-      {'range': '1mo', 'interval': '1d', 'fundamental': 'false'},
+  /// Proventos em dinheiro anunciados para um papel da B3, pela brapi.
+  ///
+  /// A consulta é a mesma rota das cotações com `dividends=true`, sem a série
+  /// diária. A lista inclui pagamentos já feitos e os agendados.
+  Future<List<DividendAnnouncement>> fetchBrazilianDividends(
+    String rawSymbol,
+  ) async {
+    final symbol = normalizeB3Symbol(rawSymbol);
+    final response = await _brapiGet(
+      symbol,
+      query: const {'dividends': 'true', 'fundamental': 'false'},
     );
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final results = body['results'] as List<dynamic>?;
+    if (results == null || results.isEmpty) {
+      throw QuoteException('Ativo $symbol não encontrado na B3');
+    }
+    return parseBrapiDividends(
+      symbol,
+      results.first as Map<String, dynamic>,
+    );
+  }
+
+  Future<http.Response> _brapiGet(
+    String tickers, {
+    String? token,
+    Map<String, String> query = const {
+      'range': '1mo',
+      'interval': '1d',
+      'fundamental': 'false',
+    },
+  }) async {
+    final chave = token ?? _brapiToken;
+    final uri = Uri.https('brapi.dev', '/api/quote/$tickers', query);
     // A chave vai no cabeçalho, e não na query: assim ela não aparece em log
     // de proxy, histórico de URL nem relatório de erro.
     final response = await _client.get(
