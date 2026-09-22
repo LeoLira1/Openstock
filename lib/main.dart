@@ -11,6 +11,7 @@ import 'models/investment_asset.dart';
 import 'screens/asset_detail_screen.dart';
 import 'screens/comparison_screen.dart';
 import 'screens/intelligence_screen.dart';
+import 'widgets/portfolio_heatmap.dart';
 import 'widgets/portfolio_performance_chart.dart';
 
 const _ink = Color(0xFF0B1220);
@@ -298,6 +299,7 @@ class HomeDashboard extends StatefulWidget {
 
 class _HomeDashboardState extends State<HomeDashboard> {
   bool _rankByMoney = false;
+  bool _heatmapTotal = false;
 
   @override
   Widget build(BuildContext context) {
@@ -367,6 +369,55 @@ class _HomeDashboardState extends State<HomeDashboard> {
                     .toList(),
               ),
             ),
+          ),
+          const SizedBox(height: 22),
+          _SectionTitle(
+            title: 'Mapa da carteira',
+            subtitle: _heatmapTotal
+                ? 'Tamanho pelo peso na carteira, cor pelo resultado desde a compra'
+                : 'Tamanho pelo peso na carteira, cor pela variação de hoje',
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: SegmentedButton<bool>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              segments: const [
+                ButtonSegment<bool>(value: false, label: Text('Hoje')),
+                ButtonSegment<bool>(value: true, label: Text('Total')),
+              ],
+              selected: {_heatmapTotal},
+              onSelectionChanged: (selection) =>
+                  setState(() => _heatmapTotal = selection.first),
+            ),
+          ),
+          const SizedBox(height: 10),
+          PortfolioHeatmap(
+            total: controller.totalValue,
+            colorCap: _heatmapTotal ? 30 : 3,
+            tiles: [
+              for (final asset in controller.assets)
+                HeatmapTile(
+                  symbol: asset.symbol,
+                  value: controller.currentValue(asset),
+                  percent: _heatmapTotal
+                      ? controller.assetTotalPercent(asset)
+                      : controller.assetDayPercent(asset),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => AssetDetailScreen(
+                        controller: controller,
+                        asset: asset,
+                        onEdit: () => _editAsset(context, controller, asset),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 22),
           _SectionTitle(
