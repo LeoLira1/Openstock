@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
+import '../models/dividends.dart';
 import '../models/fixed_income.dart';
 import '../models/history_models.dart';
 import '../models/investment_asset.dart';
@@ -49,6 +53,10 @@ class PortfolioController extends ChangeNotifier {
   TrackingReport? trackingReport;
   bool intelligenceLoading = false;
   String? intelligenceError;
+  /// Proventos anunciados por ativo (chave de sincronização), da brapi.
+  final Map<String, List<DividendAnnouncement>> _dividendAnnouncements = {};
+  bool dividendsLoading = false;
+  String? dividendsMessage;
   final Set<String> historyLoading = {};
   final Map<String, String> historyErrors = {};
 
@@ -643,6 +651,9 @@ class PortfolioController extends ChangeNotifier {
     }
     refreshing = false;
     notifyListeners();
+    // Os proventos não seguram a atualização: eles vêm do cache do dia e só
+    // os papéis ainda não consultados vão à rede.
+    unawaited(loadUpcomingDividends());
     if (syncAfter && tursoConfigured) await synchronize(silent: true);
   }
 
@@ -938,6 +949,121 @@ class PortfolioController extends ChangeNotifier {
       await synchronize(silent: true);
     }
   }
+
+  /// Proventos com pagamento de hoje em diante, do mais próximo ao mais
+  /// distante, já calculados para a quantidade de cada posição.
+  List<UpcomingDividend> get upcomingDividends {
+    final today = DateTime.now();
+    final list = <UpcomingDividend>[
+      for (final asset in assets)
+        if (_dividendAnnouncements[asset.syncKey] case final announcements?)
+          ...projectUpcomingDividends(
+            assetKey: asset.syncKey,
+            announcements: announcements,
+            transactions: transactionsFor(asset),
+            currentQuantity: asset.quantity,
+            today: today,
+          ),
+    ]..sort((a, b) {
+        final byDate =
+            a.announcement.paymentDate.compareTo(b.announcement.paymentDate);
+        return byDate != 0
+            ? byDate
+            : a.announcement.symbol.compareTo(b.announcement.symbol);
+      });
+    return list;
+  }
+
+  InvestmentAsset? assetByKey(String key) {
+    for (final asset in assets) {
+      if (asset.syncKey == key) return asset;
+    }
+    return null;
+  }
+
+  /// Busca os proventos anunciados dos papéis da B3.
+  ///
+  /// Cada papel fica guardado no aparelho por um dia: os anúncios mudam pouco
+  /// e a carteira inteira custaria dezenas de consultas a cada abertura.
+  Future<void> loadUpcomingDividends({bool force = false}) async {
+    if (dividendsLoading) return;
+    final b3 = assets
+        .where((asset) => asset.market == AssetMarket.b3 && asset.quantity > 0)
+        .toList();
+    if (b3.isEmpty) return;
+    dividendsLoading = true;
+    dividendsMessage = null;
+    notifyListeners();
+    final today = _dateKey(DateTime.now());
+    final pending = <InvestmentAsset>[];
+    try {
+      for (final asset in b3) {
+        final cached = await _readDividendCache(asset.syncKey);
+        if (cached != null) {
+          _dividendAnnouncements[asset.syncKey] = cached.items;
+        }
+        if (force || cached == null || cached.fetchedOn != today) {
+          pending.add(asset);
+        }
+      }
+      if (pending.isNotEmpty && !brapiConfigured) {
+        dividendsMessage = 'Cadastre a chave da brapi em Ajustes para '
+            'buscar os proventos anunciados.';
+        return;
+      }
+      var failures = 0;
+      for (var i = 0; i < pending.length; i += _janelaDeCotacoes) {
+        await Future.wait(
+          pending.skip(i).take(_janelaDeCotacoes).map((asset) async {
+            try {
+              final items = await _quotes.fetchBrazilianDividends(asset.symbol);
+              _dividendAnnouncements[asset.syncKey] = items;
+              await _database.writeSyncState(
+                'dividends:${asset.syncKey}',
+                jsonEncode({
+                  'fetchedOn': today,
+                  'items': [for (final item in items) item.toJson()],
+                }),
+              );
+            } catch (_) {
+              failures++;
+            }
+          }),
+        );
+      }
+      if (failures > 0) {
+        dividendsMessage = failures == pending.length
+            ? 'Não foi possível consultar os proventos agora.'
+            : '$failures ativos ficaram sem consulta de proventos; '
+                'os demais foram atualizados.';
+      }
+    } finally {
+      dividendsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<({String fetchedOn, List<DividendAnnouncement> items})?>
+      _readDividendCache(String assetKey) async {
+    try {
+      final raw = await _database.readSyncState('dividends:$assetKey');
+      if (raw == null) return null;
+      final json = jsonDecode(raw) as Map<String, dynamic>;
+      return (
+        fetchedOn: json['fetchedOn'] as String,
+        items: [
+          for (final item in json['items'] as List<dynamic>)
+            DividendAnnouncement.fromJson(item as Map<String, dynamic>),
+        ],
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String _dateKey(DateTime value) =>
+      '${value.year}-${value.month.toString().padLeft(2, '0')}-'
+      '${value.day.toString().padLeft(2, '0')}';
 
   /// Monta o balanço de [period]. Com `forceRebuild`, refaz também o
   /// rastreamento (históricos, câmbio, CDI e registros diários).

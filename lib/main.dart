@@ -12,6 +12,7 @@ import 'screens/asset_detail_screen.dart';
 import 'screens/comparison_screen.dart';
 import 'screens/intelligence_screen.dart';
 import 'widgets/portfolio_heatmap.dart';
+import 'widgets/upcoming_dividends.dart';
 import 'widgets/portfolio_performance_chart.dart';
 
 const _ink = Color(0xFF0B1220);
@@ -349,6 +350,13 @@ class _HomeDashboardState extends State<HomeDashboard> {
               ),
             ],
           ),
+          const SizedBox(height: 22),
+          const _SectionTitle(
+            title: 'Proventos a receber',
+            subtitle: 'Dividendos e JCP já anunciados para os seus papéis da B3',
+          ),
+          const SizedBox(height: 10),
+          UpcomingDividendsCard(controller: controller),
           const SizedBox(height: 22),
           const _SectionTitle(title: 'Composição'),
           const SizedBox(height: 10),
