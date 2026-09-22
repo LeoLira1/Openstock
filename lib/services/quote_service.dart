@@ -422,40 +422,50 @@ class QuoteService {
     return quote;
   }
 
-  /// Proventos em dinheiro anunciados para um papel da B3, pela brapi.
+  /// Proventos em dinheiro anunciados para um papel da B3.
   ///
-  /// A consulta é a mesma rota das cotações com `dividends=true`, sem a série
-  /// diária. A lista inclui pagamentos já feitos e os agendados.
+  /// A fonte é o cadastro público de empresas listadas da própria B3, o mesmo
+  /// que as corretoras usam: é gratuito e não pede chave (na brapi, proventos
+  /// são exclusivos dos planos pagos). Ações, units e FIIs respondem pelo
+  /// mesmo endereço; a lista inclui pagamentos feitos e agendados.
   Future<List<DividendAnnouncement>> fetchBrazilianDividends(
     String rawSymbol,
   ) async {
     final symbol = normalizeB3Symbol(rawSymbol);
-    final response = await _brapiGet(
-      symbol,
-      query: const {'dividends': 'true', 'fundamental': 'false'},
-    );
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
-    final results = body['results'] as List<dynamic>?;
-    if (results == null || results.isEmpty) {
-      throw QuoteException('Ativo $symbol não encontrado na B3');
+    if (symbol.length < 5) {
+      throw QuoteException('Código $symbol inválido para a B3');
     }
-    return parseBrapiDividends(
-      symbol,
-      results.first as Map<String, dynamic>,
+    final parameter = base64Encode(utf8.encode(jsonEncode({
+      'issuingCompany': symbol.substring(0, 4),
+      'language': 'pt-br',
+    })));
+    final uri = Uri.https(
+      'sistemaswebb3-listados.b3.com.br',
+      '/listedCompaniesProxy/CompanyCall/GetListedSupplementCompany/$parameter',
     );
+    final response =
+        await _client.get(uri).timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw QuoteException(
+        'B3 respondeu HTTP ${response.statusCode}',
+        status: response.statusCode,
+      );
+    }
+    final body = jsonDecode(utf8.decode(response.bodyBytes));
+    final company = body is List && body.isNotEmpty ? body.first : body;
+    if (company is! Map<String, dynamic>) {
+      throw QuoteException('Empresa de $symbol não encontrada na B3');
+    }
+    return parseB3Dividends(symbol, company);
   }
 
-  Future<http.Response> _brapiGet(
-    String tickers, {
-    String? token,
-    Map<String, String> query = const {
-      'range': '1mo',
-      'interval': '1d',
-      'fundamental': 'false',
-    },
-  }) async {
+  Future<http.Response> _brapiGet(String tickers, {String? token}) async {
     final chave = token ?? _brapiToken;
-    final uri = Uri.https('brapi.dev', '/api/quote/$tickers', query);
+    final uri = Uri.https(
+      'brapi.dev',
+      '/api/quote/$tickers',
+      {'range': '1mo', 'interval': '1d', 'fundamental': 'false'},
+    );
     // A chave vai no cabeçalho, e não na query: assim ela não aparece em log
     // de proxy, histórico de URL nem relatório de erro.
     final response = await _client.get(
@@ -514,7 +524,8 @@ class QuoteService {
       ),
       history: history,
       historySource: 'brapi',
-      priceDate: marketDate ?? (history.isEmpty ? null : history.last.date),
+      priceDate:
+          marketDate ?? (history.isEmpty ? null : history.last.date),
     );
   }
 

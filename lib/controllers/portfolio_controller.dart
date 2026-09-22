@@ -1006,12 +1006,8 @@ class PortfolioController extends ChangeNotifier {
           pending.add(asset);
         }
       }
-      if (pending.isNotEmpty && !brapiConfigured) {
-        dividendsMessage = 'Cadastre a chave da brapi em Ajustes para '
-            'buscar os proventos anunciados.';
-        return;
-      }
       var failures = 0;
+      String? reason;
       for (var i = 0; i < pending.length; i += _janelaDeCotacoes) {
         await Future.wait(
           pending.skip(i).take(_janelaDeCotacoes).map((asset) async {
@@ -1025,15 +1021,16 @@ class PortfolioController extends ChangeNotifier {
                   'items': [for (final item in items) item.toJson()],
                 }),
               );
-            } catch (_) {
+            } catch (error) {
               failures++;
+              reason ??= error.toString();
             }
           }),
         );
       }
       if (failures > 0) {
         dividendsMessage = failures == pending.length
-            ? 'Não foi possível consultar os proventos agora.'
+            ? 'Não foi possível consultar os proventos agora ($reason).'
             : '$failures ativos ficaram sem consulta de proventos; '
                 'os demais foram atualizados.';
       }

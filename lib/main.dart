@@ -351,13 +351,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
             ],
           ),
           const SizedBox(height: 22),
-          const _SectionTitle(
-            title: 'Proventos a receber',
-            subtitle: 'Dividendos e JCP já anunciados para os seus papéis da B3',
-          ),
-          const SizedBox(height: 10),
-          UpcomingDividendsCard(controller: controller),
-          const SizedBox(height: 22),
           const _SectionTitle(title: 'Composição'),
           const SizedBox(height: 10),
           Card(
@@ -486,6 +479,13 @@ class _HomeDashboardState extends State<HomeDashboard> {
             positive: false,
             rankByMoney: _rankByMoney,
           ),
+          const SizedBox(height: 22),
+          const _SectionTitle(
+            title: 'Proventos a receber',
+            subtitle: 'Dividendos, JCP e rendimentos anunciados na B3 para os seus papéis',
+          ),
+          const SizedBox(height: 10),
+          UpcomingDividendsCard(controller: controller),
         ],
       ),
     );

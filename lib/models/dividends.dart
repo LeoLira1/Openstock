@@ -24,15 +24,20 @@ class DividendAnnouncement {
   final DateTime? recordDate;
   final DateTime? exDate;
 
-  bool get isInterestOnCapital =>
-      label.toUpperCase().contains('JCP') ||
-      label.toUpperCase().contains('JUROS');
+  bool get isInterestOnCapital {
+    final upper = label.toUpperCase();
+    // A B3 escreve "JRS CAP PROPRIO"; a brapi, "JCP".
+    return upper.contains('JCP') ||
+        upper.contains('JUROS') ||
+        upper.contains('JRS');
+  }
 
   String get displayLabel {
     final upper = label.toUpperCase();
     if (isInterestOnCapital) return 'JCP';
     if (upper.contains('RENDIMENTO')) return 'Rendimento';
     if (upper.contains('DIVIDENDO')) return 'Dividendo';
+    if (upper.contains('AMORTIZA')) return 'Amortização';
     return label.isEmpty
         ? 'Provento'
         : label[0].toUpperCase() + label.substring(1).toLowerCase();
@@ -62,39 +67,71 @@ class DividendAnnouncement {
       );
 }
 
-/// Lê `dividendsData.cashDividends` de um resultado da brapi.
+/// Lê a lista `cashDividends` do cadastro público da B3 para [symbol].
 ///
-/// As datas chegam como meia-noite de Brasília em UTC (`T03:00:00.000Z`);
-/// elas viram o dia do calendário da B3, independentemente do fuso do
-/// aparelho. Linhas repetidas, que a fonte às vezes devolve, são descartadas.
-List<DividendAnnouncement> parseBrapiDividends(
+/// A B3 devolve os proventos de todas as classes da empresa (ON, PN, units,
+/// recibos de subscrição…); só ficam os do código ISIN que corresponde ao
+/// papel. Datas vêm como `dd/MM/yyyy` e valores com vírgula decimal.
+List<DividendAnnouncement> parseB3Dividends(
   String symbol,
-  Map<String, dynamic> result,
+  Map<String, dynamic> company,
 ) {
-  final data = result['dividendsData'];
-  final rows = data is Map<String, dynamic>
-      ? data['cashDividends'] as List<dynamic>? ?? const []
-      : const [];
+  final rows = company['cashDividends'] as List<dynamic>? ?? const [];
   final seen = <String>{};
   final parsed = <DividendAnnouncement>[];
   for (final item in rows) {
     if (item is! Map<String, dynamic>) continue;
-    final rate = (item['rate'] as num?)?.toDouble();
-    final payment = _b3Day(item['paymentDate']);
+    final isin = item['isinCode']?.toString() ?? '';
+    if (!b3IsinMatchesSymbol(isin, symbol)) continue;
+    final rate = double.tryParse(
+      (item['rate']?.toString() ?? '').replaceAll('.', '').replaceAll(',', '.'),
+    );
+    final payment = _brDate(item['paymentDate']);
     if (rate == null || rate <= 0 || payment == null) continue;
     final announcement = DividendAnnouncement(
       symbol: symbol,
-      label: (item['label'] as String? ?? '').trim(),
+      label: (item['label']?.toString() ?? '').trim(),
       rate: rate,
       paymentDate: payment,
-      recordDate: _b3Day(item['lastDatePrior']),
-      exDate: _b3Day(item['exDate']),
+      recordDate: _brDate(item['lastDatePrior']),
     );
     final key = '${announcement.label}|${announcement.rate}|'
         '${_dateKey(payment)}|${announcement.recordDate}';
     if (seen.add(key)) parsed.add(announcement);
   }
   return parsed;
+}
+
+/// Diz se o ISIN é da classe negociada com [symbol].
+///
+/// O número do código da B3 indica a classe: 3 = ON (`ACNOR`), 4 = PN
+/// (`ACNPR`), 5 a 8 = PNA a PND, 11 = unit (`CDAM`) ou cota de fundo (`CTF`).
+bool b3IsinMatchesSymbol(String isin, String symbol) {
+  final match = RegExp(r'^[A-Z0-9]{4}(\d{1,2})F?$').firstMatch(
+    symbol.trim().toUpperCase(),
+  );
+  if (match == null || isin.length < 11) return false;
+  final code = isin.substring(6, 11);
+  return switch (match.group(1)) {
+    '3' => code == 'ACNOR',
+    '4' => code == 'ACNPR',
+    '5' => code == 'ACNPA',
+    '6' => code == 'ACNPB',
+    '7' => code == 'ACNPC',
+    '8' => code == 'ACNPD',
+    '11' => code.startsWith('CDAM') || code.startsWith('CTF'),
+    _ => false,
+  };
+}
+
+DateTime? _brDate(Object? value) {
+  final parts = value?.toString().split('/');
+  if (parts == null || parts.length != 3) return null;
+  final day = int.tryParse(parts[0]);
+  final month = int.tryParse(parts[1]);
+  final year = int.tryParse(parts[2]);
+  if (day == null || month == null || year == null) return null;
+  return DateTime(year, month, day);
 }
 
 /// Quanto um provento anunciado vai render na sua carteira.
@@ -166,14 +203,6 @@ List<UpcomingDividend> projectUpcomingDividends({
     ));
   }
   return upcoming;
-}
-
-DateTime? _b3Day(Object? value) {
-  if (value is! String || value.isEmpty) return null;
-  final parsed = DateTime.tryParse(value);
-  if (parsed == null) return null;
-  final brasilia = parsed.toUtc().subtract(const Duration(hours: 3));
-  return DateTime(brasilia.year, brasilia.month, brasilia.day);
 }
 
 DateTime _day(DateTime value) => DateTime(value.year, value.month, value.day);
