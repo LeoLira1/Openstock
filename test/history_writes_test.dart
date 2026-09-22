@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openstock/models/history_models.dart';
 import 'package:openstock/models/investment_asset.dart';
 import 'package:openstock/services/database_service.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -88,6 +89,53 @@ void main() {
     final historico = await ctx.service.loadAssetHistory('b3:PRIO3');
     expect(historico, hasLength(2));
     expect(historico.first.value, 40.0);
+
+    await ctx.db.close();
+    await ctx.dir.delete(recursive: true);
+  });
+
+  test('registros diários em lote não voltam a ficar pendentes sem mudar',
+      () async {
+    final ctx = await abrir();
+    AssetDailySnapshot dia(int day, double value) => AssetDailySnapshot(
+          assetKey: 'b3:PRIO3',
+          date: DateTime(2026, 9, day),
+          quantity: 10,
+          averagePrice: 40,
+          exchangeRate: 1,
+          currentPrice: value / 10,
+          valueBrl: value,
+          costBrl: 400,
+          updatedAt: DateTime.utc(2026, 9, day),
+        );
+    Future<Map<String, int>> pendentes() async {
+      final rows = await ctx.db.query('asset_daily_snapshots',
+          columns: ['snapshot_date', 'sync_status']);
+      return {
+        for (final row in rows)
+          row['snapshot_date'] as String: row['sync_status'] as int,
+      };
+    }
+
+    await ctx.service.saveAssetDailySnapshots([dia(1, 450), dia(2, 460)]);
+    await ctx.db.update('asset_daily_snapshots', {'sync_status': 1});
+
+    await ctx.service.saveAssetDailySnapshots([dia(1, 450), dia(2, 470)]);
+
+    final status = await pendentes();
+    expect(status.values.where((value) => value == 0), hasLength(1));
+    final saved = await ctx.service.loadAssetDailySnapshots('b3:PRIO3');
+    expect(saved.map((item) => item.valueBrl), [450, 470]);
+
+    await ctx.service.savePortfolioSnapshots([
+      (date: DateTime(2026, 9, 1), total: 450, cost: 400),
+    ]);
+    await ctx.db.update('portfolio_snapshots', {'sync_status': 1});
+    await ctx.service.savePortfolioSnapshots([
+      (date: DateTime(2026, 9, 1), total: 450, cost: 400),
+    ]);
+    final portfolio = await ctx.db.query('portfolio_snapshots');
+    expect(portfolio.single['sync_status'], 1);
 
     await ctx.db.close();
     await ctx.dir.delete(recursive: true);

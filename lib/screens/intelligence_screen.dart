@@ -26,10 +26,15 @@ class IntelligenceScreen extends StatefulWidget {
 class _IntelligenceScreenState extends State<IntelligenceScreen> {
   late int year;
 
+  /// Mês escolhido; `null` mostra o ano inteiro.
+  int? month;
+
   @override
   void initState() {
     super.initState();
-    year = DateTime.now().year;
+    final now = DateTime.now();
+    year = now.year;
+    month = now.month;
     if (widget.active) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _load());
     }
@@ -43,22 +48,46 @@ class _IntelligenceScreenState extends State<IntelligenceScreen> {
     }
   }
 
-  Future<void> _load() => widget.controller.loadIntelligence(year);
+  ReportPeriod get _period => ReportPeriod(year, month);
+
+  Future<void> _load({bool force = false}) =>
+      widget.controller.loadIntelligence(_period, forceRebuild: force);
+
+  void _select(int newYear, int? newMonth) {
+    if (newYear == year && newMonth == month) return;
+    setState(() {
+      year = newYear;
+      month = newMonth;
+    });
+    _load();
+  }
 
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
-    final report = controller.annualTrackingReport;
-    final firstYear = controller.assets
+    final report = controller.trackingReport;
+    final now = DateTime.now();
+    final firstTracking = controller.assets
         .map(controller.trackingStartFor)
         .whereType<DateTime>()
-        .map((date) => date.year)
-        .fold(DateTime.now().year, (a, b) => a < b ? a : b);
-    final lastYear = DateTime.now().year + 1;
+        .fold<DateTime?>(null, (a, b) => a == null || b.isBefore(a) ? b : a);
+    final firstYear = firstTracking == null || firstTracking.year > now.year
+        ? now.year
+        : firstTracking.year;
+    final lastYear = now.year + 1;
     final years = [for (var value = firstYear; value <= lastYear; value++) value];
+    // Meses sem como ter registro (antes do rastreamento ou no futuro) ficam
+    // visíveis, mas desabilitados.
+    bool available(int y, int m) {
+      if (DateTime(y, m).isAfter(now)) return false;
+      if (firstTracking == null) return true;
+      return y * 12 + m >= firstTracking.year * 12 + firstTracking.month;
+    }
+    bool monthAvailable(int value) => available(year, value);
+    final busy = controller.intelligenceLoading;
 
     return RefreshIndicator(
-      onRefresh: _load,
+      onRefresh: () => _load(force: true),
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
         children: [
@@ -70,23 +99,67 @@ class _IntelligenceScreenState extends State<IntelligenceScreen> {
             style: TextStyle(color: _muted),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<int>(
-            initialValue: year,
-            decoration: const InputDecoration(
-              labelText: 'Relatório anual',
-              prefixIcon: Icon(Icons.calendar_month_outlined),
-            ),
-            items: years
-                .map((value) => DropdownMenuItem(
-                      value: value,
-                      child: Text('Ano $value'),
-                    ))
-                .toList(),
-            onChanged: controller.intelligenceLoading ? null : (value) {
-              if (value == null || value == year) return;
-              setState(() => year = value);
-              _load();
-            },
+          Row(
+            children: [
+              Expanded(
+                flex: 5,
+                child: DropdownButtonFormField<int>(
+                  initialValue: year,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Ano',
+                    prefixIcon: Icon(Icons.calendar_month_outlined),
+                  ),
+                  items: years
+                      .map((value) => DropdownMenuItem(
+                            value: value,
+                            child: Text('$value'),
+                          ))
+                      .toList(),
+                  onChanged: busy
+                      ? null
+                      : (value) {
+                          if (value == null) return;
+                          // Ao trocar de ano, um mês sem registros possíveis no
+                          // novo ano (futuro ou anterior ao início) vira "ano
+                          // inteiro".
+                          final keep = month != null && available(value, month!);
+                          _select(value, keep ? month : null);
+                        },
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 6,
+                child: DropdownButtonFormField<int?>(
+                  key: ValueKey('month-$year-$month'),
+                  initialValue: month,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Período',
+                    prefixIcon: Icon(Icons.date_range_outlined),
+                  ),
+                  items: [
+                    const DropdownMenuItem<int?>(
+                      value: null,
+                      child: Text('Ano inteiro'),
+                    ),
+                    for (var value = 1; value <= 12; value++)
+                      DropdownMenuItem<int?>(
+                        value: value,
+                        enabled: monthAvailable(value),
+                        child: Text(
+                          _capitalize(ReportPeriod.monthNames[value - 1]),
+                          style: monthAvailable(value)
+                              ? null
+                              : const TextStyle(color: _muted),
+                        ),
+                      ),
+                  ],
+                  onChanged: busy ? null : (value) => _select(year, value),
+                ),
+              ),
+            ],
           ),
           if (controller.intelligenceLoading) ...[
             const SizedBox(height: 14),
@@ -98,7 +171,7 @@ class _IntelligenceScreenState extends State<IntelligenceScreen> {
             ),
           ],
           const SizedBox(height: 18),
-          if (report != null) _AnnualReportCard(report: report),
+          if (report != null) _ReportCard(report: report),
           if (controller.intelligenceError != null) ...[
             Card(
               child: Padding(
@@ -133,10 +206,10 @@ class _IntelligenceScreenState extends State<IntelligenceScreen> {
   }
 }
 
-class _AnnualReportCard extends StatelessWidget {
-  const _AnnualReportCard({required this.report});
+class _ReportCard extends StatelessWidget {
+  const _ReportCard({required this.report});
 
-  final AnnualTrackingReport report;
+  final TrackingReport report;
 
   @override
   Widget build(BuildContext context) {
@@ -147,7 +220,7 @@ class _AnnualReportCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Balanço de ${report.year}',
+            Text('Balanço de ${report.period.label}',
                 style:
                     const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
             const SizedBox(height: 3),
@@ -334,6 +407,8 @@ class _AssetJourneyCard extends StatelessWidget {
 
 final _brl =
     NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$', decimalDigits: 2);
+String _capitalize(String value) =>
+    value.isEmpty ? value : value[0].toUpperCase() + value.substring(1);
 String _date(DateTime value) => DateFormat('dd/MM/yyyy').format(value);
 String _signedMoney(double value) =>
     '${value >= 0 ? '+' : '-'}${_brl.format(value.abs())}';
