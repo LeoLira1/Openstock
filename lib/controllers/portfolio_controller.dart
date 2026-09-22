@@ -35,12 +35,9 @@ class PortfolioController extends ChangeNotifier {
   List<PricePoint> portfolioHistory = [];
   List<PortfolioSnapshot> portfolioSnapshots = [];
 
-  /// Todos os registros diários da carteira, para o gráfico da tela inicial.
-  /// [portfolioSnapshots] pode estar recortado pela janela da comparação.
-  List<PortfolioSnapshot> portfolioTimeline = [];
-
-  /// Dia e valor em que cada ativo entrou no rastreamento.
-  List<PricePoint> trackingEntryPoints = [];
+  /// Registros diários de cada ativo, usados no gráfico da tela inicial e no
+  /// relatório. Uma nova recarga troca o mapa inteiro.
+  Map<String, List<AssetDailySnapshot>> assetSnapshotsByKey = const {};
   List<CdiRate> cdiRates = [];
   List<PricePoint> cdiHistory = [];
   bool cdiLoading = false;
@@ -297,7 +294,6 @@ class PortfolioController extends ChangeNotifier {
 
   Future<void> _reloadSnapshots({DateTime? from}) async {
     portfolioSnapshots = await _database.loadPortfolioSnapshots(from: from);
-    if (from == null) portfolioTimeline = portfolioSnapshots;
     portfolioHistory =
         portfolioSnapshots.map((snapshot) => snapshot.toPoint()).toList();
   }
@@ -308,13 +304,10 @@ class PortfolioController extends ChangeNotifier {
       ...assets.map((asset) => _database.loadAssetDailySnapshots(asset.syncKey)),
     ]);
     final rates = results.first as List<CdiRate>;
-    trackingEntryPoints = trackingEntries([
+    assetSnapshotsByKey = Map.unmodifiable({
       for (var i = 0; i < assets.length; i++)
-        (
-          snapshots: results[i + 1] as List<AssetDailySnapshot>,
-          transactions: transactionsFor(assets[i]),
-        ),
-    ]);
+        assets[i].syncKey: results[i + 1] as List<AssetDailySnapshot>,
+    });
     assetTrackingSummaries.clear();
     for (var i = 0; i < assets.length; i++) {
       final asset = assets[i];
@@ -984,7 +977,8 @@ class PortfolioController extends ChangeNotifier {
         snapshots: results[0] as List<PortfolioSnapshot>,
         transactions: results[1] as List<InvestmentTransaction>,
         cdiRates: results[2] as List<CdiRate>,
-        entries: trackingEntryPoints,
+        assetSnapshots: assetSnapshotsByKey,
+        transactionsByAsset: transactionsByAsset,
       );
       if (trackingReport == null) {
         intelligenceError = 'Ainda não existem registros para ${period.label}.';

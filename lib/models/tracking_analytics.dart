@@ -90,7 +90,6 @@ class TrackingReport {
     required this.returnPercent,
     required this.cdiPercent,
     required this.snapshotCount,
-    this.trackedEntriesBrl = 0,
   });
 
   final ReportPeriod period;
@@ -105,10 +104,6 @@ class TrackingReport {
   final double returnPercent;
   final double cdiPercent;
   final int snapshotCount;
-
-  /// Valor dos ativos que passaram a ser rastreados durante o período. Eles
-  /// entram no patrimônio sem serem rendimento, como um aporte.
-  final double trackedEntriesBrl;
 
   int get year => period.year;
 
@@ -163,49 +158,13 @@ TrackingReport? calculateAnnualTrackingReport({
   required List<PortfolioSnapshot> snapshots,
   required List<InvestmentTransaction> transactions,
   required List<CdiRate> cdiRates,
-  List<PricePoint> entries = const [],
 }) =>
     calculateTrackingReport(
       period: ReportPeriod(year),
       snapshots: snapshots,
       transactions: transactions,
       cdiRates: cdiRates,
-      entries: entries,
     );
-
-/// Primeiro registro de cada ativo com posição: o dia em que ele passou a
-/// fazer parte do patrimônio rastreado.
-///
-/// Um ativo cadastrado depois do início do rastreamento faz o patrimônio
-/// saltar. Sem esse marco, o salto era lido como rendimento e inflava o
-/// resultado (e o gráfico) com dinheiro que já existia.
-List<PricePoint> trackingEntries(
-  Iterable<({List<AssetDailySnapshot> snapshots,
-          List<InvestmentTransaction> transactions})>
-      assets,
-) {
-  final entries = <PricePoint>[];
-  for (final asset in assets) {
-    // Só a posição inicial é "entrada": compras já contam como aporte.
-    final opening = asset.transactions
-        .where((item) =>
-            item.deletedAt == null &&
-            item.type == InvestmentTransactionType.openingPosition)
-        .fold<double>(0, (sum, item) => sum + item.quantity);
-    if (opening <= 0) continue;
-    final ordered = [...asset.snapshots]
-      ..sort((a, b) => a.date.compareTo(b.date));
-    for (final snapshot in ordered) {
-      if (snapshot.quantity <= 0) continue;
-      // Compras no mesmo dia já são contadas como aporte; a entrada fica só
-      // com a fatia da posição inicial.
-      final share = (opening / snapshot.quantity).clamp(0.0, 1.0);
-      entries.add(PricePoint(_day(snapshot.date), snapshot.valueBrl * share));
-      break;
-    }
-  }
-  return entries;
-}
 
 /// Balanço de [period]: o último registro anterior ao período serve de ponto de
 /// partida, para que o primeiro pregão do mês (ou do ano) já conte resultado.
@@ -214,7 +173,8 @@ TrackingReport? calculateTrackingReport({
   required List<PortfolioSnapshot> snapshots,
   required List<InvestmentTransaction> transactions,
   required List<CdiRate> cdiRates,
-  List<PricePoint> entries = const [],
+  Map<String, List<AssetDailySnapshot>>? assetSnapshots,
+  Map<String, List<InvestmentTransaction>> transactionsByAsset = const {},
 }) {
   final periodStart = period.start;
   final periodEnd = period.end;
@@ -254,23 +214,42 @@ TrackingReport? calculateTrackingReport({
       income += item.cashValueBrl;
     }
   }
-  final periodEntries = entries
-      .where((item) =>
-          _day(item.date).isAfter(_day(flowStart)) &&
-          !_day(item.date).isAfter(_day(periodEnd)))
-      .toList();
-  final entered =
-      periodEntries.fold<double>(0, (sum, item) => sum + item.value);
-  final index = portfolioReturnIndexWithTransactions(
-    ordered,
-    periodTransactions,
-    entries: periodEntries,
-  );
-  final returnPercent = index.length < 2
-      ? 0.0
-      : (index.last.value / index.first.value - 1) * 100;
-  final initial = ordered.first.totalBrl;
-  final finalValue = ordered.last.totalBrl;
+  var returnPercent = 0.0;
+  var initial = ordered.first.totalBrl;
+  var finalValue = ordered.last.totalBrl;
+  double? profit;
+  final series = assetSnapshots == null
+      ? null
+      : _assetSeries(assetSnapshots, transactionsByAsset);
+  if (series != null && series.isNotEmpty) {
+    // O resultado sai ativo por ativo: um total diário gravado por uma versão
+    // antiga ou por outro aparelho não consegue mais distorcer o balanço.
+    _SeriesPoint? base;
+    _SeriesPoint? last;
+    for (final point in series) {
+      if (point.date.isAfter(periodEnd)) break;
+      if (point.date.isBefore(periodStart)) {
+        base = point;
+      } else {
+        base ??= point;
+        last = point;
+      }
+    }
+    if (base != null && last != null) {
+      initial = base.value;
+      finalValue = last.value;
+      profit = last.result - base.result;
+      returnPercent = (last.index / base.index - 1) * 100;
+    }
+  } else {
+    final index = portfolioReturnIndexWithTransactions(
+      ordered,
+      periodTransactions,
+    );
+    returnPercent = index.length < 2
+        ? 0.0
+        : (index.last.value / index.first.value - 1) * 100;
+  }
   return TrackingReport(
     period: period,
     start: withinYear.first.date,
@@ -280,11 +259,10 @@ TrackingReport? calculateTrackingReport({
     purchasesBrl: purchases,
     salesBrl: sales,
     incomeBrl: income,
-    profitBrl: finalValue + sales + income - initial - purchases - entered,
+    profitBrl: profit ?? finalValue + sales + income - initial - purchases,
     returnPercent: returnPercent,
     cdiPercent: cdiReturnBetween(cdiRates, flowStart, withinYear.last.date),
     snapshotCount: withinYear.length,
-    trackedEntriesBrl: entered,
   );
 }
 
@@ -299,7 +277,7 @@ class PortfolioPerformancePoint {
 
   final DateTime date;
 
-  /// Patrimônio do dia, como gravado.
+  /// Patrimônio do dia: soma dos registros de cada ativo.
   final double valueBrl;
 
   /// Ganho ou perda acumulado desde o primeiro ponto, sem contar aportes,
@@ -313,56 +291,122 @@ class PortfolioPerformancePoint {
 
 /// Série do gráfico da carteira a partir de [since] (ou de tudo, se nulo).
 ///
-/// O último registro anterior a [since] vira a linha de base, como o
-/// "fechamento anterior" dos gráficos de cotação.
+/// O último dia anterior a [since] vira a linha de base, como o "fechamento
+/// anterior" dos gráficos de cotação.
 List<PortfolioPerformancePoint> calculatePortfolioPerformance({
-  required List<PortfolioSnapshot> snapshots,
-  required List<InvestmentTransaction> transactions,
-  List<PricePoint> entries = const [],
+  required Map<String, List<AssetDailySnapshot>> assetSnapshots,
+  required Map<String, List<InvestmentTransaction>> transactionsByAsset,
   DateTime? since,
 }) {
-  final ordered = [...snapshots]..sort((a, b) => a.date.compareTo(b.date));
-  if (ordered.isEmpty) return const [];
-  var startIndex = 0;
-  if (since != null) {
-    final firstInside =
-        ordered.indexWhere((item) => !item.date.isBefore(_day(since)));
-    if (firstInside < 0) {
-      startIndex = ordered.length - 1;
-    } else {
-      startIndex = firstInside > 0 ? firstInside - 1 : 0;
-    }
-  }
-  final window = ordered.sublist(startIndex);
-  final base = window.first;
-  final index = portfolioReturnIndexWithTransactions(
-    window,
-    transactions,
-    entries: entries,
-  );
-  final points = <PortfolioPerformancePoint>[
-    PortfolioPerformancePoint(
-      date: base.date,
-      valueBrl: base.totalBrl,
-      resultBrl: 0,
-      returnPercent: 0,
-    ),
+  final series = _assetSeries(assetSnapshots, transactionsByAsset);
+  if (series.isEmpty) return const [];
+  final first = series.first;
+  final all = [
+    for (final point in series)
+      PortfolioPerformancePoint(
+        date: point.date,
+        valueBrl: point.value,
+        resultBrl: point.result - first.result,
+        returnPercent: (point.index / first.index - 1) * 100,
+      ),
   ];
-  var netInflow = 0.0;
-  for (var i = 1; i < window.length; i++) {
-    final flows = _flowsBetween(
-      transactions,
-      window[i - 1].date,
-      window[i].date,
-      entries: entries,
-    );
-    netInflow += flows.inflow - flows.outflow;
-    points.add(PortfolioPerformancePoint(
-      date: window[i].date,
-      valueBrl: window[i].totalBrl,
-      resultBrl: window[i].totalBrl - base.totalBrl - netInflow,
-      returnPercent: (index[i].value / index.first.value - 1) * 100,
-    ));
+  return since == null ? all : rebasePerformance(all, since);
+}
+
+/// Recorta [points] a partir de [since], com o dia anterior como base zero.
+List<PortfolioPerformancePoint> rebasePerformance(
+  List<PortfolioPerformancePoint> points,
+  DateTime since,
+) {
+  if (points.isEmpty) return points;
+  final firstInside =
+      points.indexWhere((point) => !point.date.isBefore(_day(since)));
+  final start = firstInside < 0
+      ? points.length - 1
+      : firstInside > 0
+          ? firstInside - 1
+          : 0;
+  final base = points[start];
+  final baseFactor = 1 + base.returnPercent / 100;
+  return [
+    for (final point in points.skip(start))
+      PortfolioPerformancePoint(
+        date: point.date,
+        valueBrl: point.valueBrl,
+        resultBrl: point.resultBrl - base.resultBrl,
+        returnPercent:
+            ((1 + point.returnPercent / 100) / baseFactor - 1) * 100,
+      ),
+  ];
+}
+
+class _SeriesPoint {
+  const _SeriesPoint(this.date, this.value, this.result, this.index);
+  final DateTime date;
+  final double value;
+  final double result;
+  final double index;
+}
+
+/// Patrimônio, resultado acumulado e índice de rentabilidade dia a dia,
+/// calculados ativo por ativo.
+///
+/// Cada dia só compara ativos que já existiam no dia anterior; um ativo que
+/// aparece pela primeira vez entra neutro, sem virar alta nem queda. Compras,
+/// vendas e proventos de cada ativo entram como fluxo daquele ativo.
+List<_SeriesPoint> _assetSeries(
+  Map<String, List<AssetDailySnapshot>> assetSnapshots,
+  Map<String, List<InvestmentTransaction>> transactionsByAsset,
+) {
+  final keys = assetSnapshots.keys.toList();
+  final ordered = [
+    for (final key in keys)
+      [...assetSnapshots[key]!]..sort((a, b) => a.date.compareTo(b.date)),
+  ];
+  final dates = <DateTime>{
+    for (final snapshots in ordered) ...snapshots.map((item) => _day(item.date)),
+  }.toList()
+    ..sort();
+  if (dates.isEmpty) return const [];
+  final cursors = List.filled(keys.length, -1);
+  final previous = List<AssetDailySnapshot?>.filled(keys.length, null);
+  final points = <_SeriesPoint>[];
+  var result = 0.0;
+  var index = 100.0;
+  for (var d = 0; d < dates.length; d++) {
+    final date = dates[d];
+    var value = 0.0;
+    var gain = 0.0;
+    var base = 0.0;
+    final current = List<AssetDailySnapshot?>.filled(keys.length, null);
+    for (var i = 0; i < keys.length; i++) {
+      final snapshots = ordered[i];
+      while (cursors[i] + 1 < snapshots.length &&
+          !_day(snapshots[cursors[i] + 1].date).isAfter(date)) {
+        cursors[i]++;
+      }
+      if (cursors[i] < 0) continue;
+      final snapshot = snapshots[cursors[i]];
+      current[i] = snapshot;
+      value += snapshot.valueBrl;
+      final before = previous[i];
+      if (d == 0 || before == null) continue;
+      final flows = _flowsBetween(
+        transactionsByAsset[keys[i]] ?? const [],
+        dates[d - 1],
+        date,
+      );
+      gain += snapshot.valueBrl + flows.outflow - before.valueBrl - flows.inflow;
+      base += before.valueBrl + flows.inflow;
+    }
+    if (d > 0) {
+      result += gain;
+      if (base > 0) index *= 1 + gain / base;
+    }
+    points.add(_SeriesPoint(date, value, result, index));
+    for (var i = 0; i < keys.length; i++) {
+      previous[i] = current[i];
+    }
   }
   return points;
 }
@@ -397,7 +441,6 @@ List<PricePoint> portfolioReturnIndexWithTransactions(
   List<PortfolioSnapshot> snapshots,
   List<InvestmentTransaction> transactions, {
   double base = 100,
-  List<PricePoint> entries = const [],
 }) {
   if (snapshots.isEmpty) return const [];
   final ordered = [...snapshots]..sort((a, b) => a.date.compareTo(b.date));
@@ -410,7 +453,6 @@ List<PricePoint> portfolioReturnIndexWithTransactions(
       transactions,
       previous.date,
       current.date,
-      entries: entries,
     );
     final denominator = previous.totalBrl + flows.inflow;
     if (denominator > 0) {
@@ -434,17 +476,10 @@ double cdiReturnBetween(List<CdiRate> rates, DateTime start, DateTime end) {
 ({double inflow, double outflow}) _flowsBetween(
   List<InvestmentTransaction> transactions,
   DateTime after,
-  DateTime through, {
-  List<PricePoint> entries = const [],
-}) {
+  DateTime through,
+) {
   var inflow = 0.0;
   var outflow = 0.0;
-  for (final entry in entries) {
-    final day = _day(entry.date);
-    if (day.isAfter(_day(after)) && !day.isAfter(_day(through))) {
-      inflow += entry.value;
-    }
-  }
   for (final item in transactions) {
     final transactionDay = _day(item.transactionDate);
     if (item.deletedAt != null ||

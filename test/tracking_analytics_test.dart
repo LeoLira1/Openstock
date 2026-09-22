@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openstock/models/history_models.dart';
-import 'package:openstock/models/investment_asset.dart';
 import 'package:openstock/models/investment_transaction.dart';
 import 'package:openstock/models/tracking_analytics.dart';
 
@@ -238,95 +237,123 @@ void main() {
     expect(const ReportPeriod(2026).label, '2026');
   });
 
-  test('ativo incluído depois do início não vira lucro', () {
-    // 16/09 só um ativo; 17/09 outro passa a ser rastreado com R$ 10 mil.
-    final snapshots = [
-      portfolioDay(DateTime(2026, 9, 16), 38000),
-      portfolioDay(DateTime(2026, 9, 17), 48100),
-      portfolioDay(DateTime(2026, 9, 18), 47900),
-    ];
-    final entries = [PricePoint(DateTime(2026, 9, 17), 10000)];
+  AssetDailySnapshot asset(String key, DateTime date, double value,
+          {double quantity = 10}) =>
+      AssetDailySnapshot(
+        assetKey: key,
+        date: date,
+        quantity: quantity,
+        averagePrice: 1,
+        exchangeRate: 1,
+        currentPrice: value / quantity,
+        valueBrl: value,
+        costBrl: quantity,
+        updatedAt: date.toUtc(),
+      );
+
+  test('ativos incluídos depois do início não viram lucro nem prejuízo', () {
+    // Caso do print: 16/09 só um ativo; 17/09 outros 38 passam a ser
+    // rastreados, somando R\$ 11.100.
+    final d16 = DateTime(2026, 9, 16);
+    final d17 = DateTime(2026, 9, 17);
+    final d18 = DateTime(2026, 9, 18);
+    final snapshots = <String, List<AssetDailySnapshot>>{
+      'a': [asset('a', d16, 38700), asset('a', d17, 38800), asset('a', d18, 38750)],
+      for (var i = 0; i < 38; i++)
+        'n$i': [
+          asset('n$i', d17, 11100 / 38),
+          asset('n$i', d18, 11100 / 38 + 1),
+        ],
+    };
 
     final points = calculatePortfolioPerformance(
-      snapshots: snapshots,
-      transactions: const [],
-      entries: entries,
+      assetSnapshots: snapshots,
+      transactionsByAsset: const {},
     );
 
     expect(points, hasLength(3));
+    expect(points[1].valueBrl, closeTo(49900, 0.0001));
     expect(points[1].resultBrl, closeTo(100, 0.0001));
-    expect(points[2].resultBrl, closeTo(-100, 0.0001));
-    expect(points[1].returnPercent, closeTo(100 / 480, 0.0001));
+    expect(points[1].returnPercent, closeTo(100 / 38700 * 100, 0.0001));
+    expect(points[2].resultBrl, closeTo(100 - 50 + 38, 0.0001));
 
     final report = calculateTrackingReport(
       period: const ReportPeriod(2026, 9),
-      snapshots: snapshots,
+      snapshots: [
+        // Total antigo, gravado sem todos os ativos: não pode mais distorcer.
+        portfolioDay(d16, 38731.33),
+        portfolioDay(d18, 49975.70),
+      ],
       transactions: const [],
       cdiRates: const [],
-      entries: entries,
+      assetSnapshots: snapshots,
     );
-    expect(report!.profitBrl, closeTo(-100, 0.0001));
-    expect(report.trackedEntriesBrl, 10000);
-    expect(report.returnPercent, lessThan(0));
+    expect(report!.profitBrl, closeTo(88, 0.0001));
+    expect(report.initialValueBrl, 38700);
+    expect(report.returnPercent, greaterThan(0));
+    expect(report.returnPercent, lessThan(1));
   });
 
-  test('gráfico da carteira parte do registro anterior à janela', () {
+  test('compra no meio do período é aporte e venda com provento é saída', () {
+    final d1 = DateTime(2026, 9, 1);
+    final d2 = DateTime(2026, 9, 2);
+    final d3 = DateTime(2026, 9, 3);
+    InvestmentTransaction tx(String id, InvestmentTransactionType type,
+            DateTime date,
+            {double quantity = 0, double price = 0, double cash = 0}) =>
+        InvestmentTransaction(
+          id: id,
+          assetKey: 'a',
+          type: type,
+          quantity: quantity,
+          unitPrice: price,
+          cashValue: cash,
+          transactionDate: date,
+          createdAt: date.toUtc(),
+          updatedAt: date.toUtc(),
+        );
+
     final points = calculatePortfolioPerformance(
-      snapshots: [
-        portfolioDay(DateTime(2026, 8, 1), 900),
-        portfolioDay(DateTime(2026, 8, 20), 1000),
-        portfolioDay(DateTime(2026, 9, 1), 1100),
-        portfolioDay(DateTime(2026, 9, 2), 1650),
-      ],
-      transactions: [
-        _transaction(
-          id: 'buy',
-          type: InvestmentTransactionType.purchase,
-          date: DateTime(2026, 9, 2),
-          quantity: 5,
-          price: 100,
-        ),
-      ],
+      assetSnapshots: {
+        'a': [
+          asset('a', d1, 1000),
+          asset('a', d2, 1550, quantity: 15),
+          asset('a', d3, 1100, quantity: 10),
+        ],
+      },
+      transactionsByAsset: {
+        'a': [
+          tx('buy', InvestmentTransactionType.purchase, d2,
+              quantity: 5, price: 100),
+          tx('sell', InvestmentTransactionType.sale, d3,
+              quantity: 5, price: 100),
+          tx('div', InvestmentTransactionType.dividend, d3, cash: 20),
+        ],
+      },
+    );
+
+    // 1000 → 1550 com R$ 500 de compra: +50.
+    expect(points[1].resultBrl, closeTo(50, 0.0001));
+    // 1550 → 1100 com R$ 500 de venda e R$ 20 de provento: +70.
+    expect(points[2].resultBrl, closeTo(120, 0.0001));
+  });
+
+  test('janela do gráfico parte do dia anterior e zera o resultado', () {
+    final points = calculatePortfolioPerformance(
+      assetSnapshots: {
+        'a': [
+          asset('a', DateTime(2026, 8, 1), 900),
+          asset('a', DateTime(2026, 8, 20), 1000),
+          asset('a', DateTime(2026, 9, 1), 1100),
+          asset('a', DateTime(2026, 9, 2), 1210),
+        ],
+      },
+      transactionsByAsset: const {},
       since: DateTime(2026, 8, 22),
     );
 
     expect(points.first.date, DateTime(2026, 8, 20));
-    expect(points.map((item) => item.resultBrl), [0, 100, 150]);
-    // 1100/1000 e depois 1650/(1100 + 500): retorno ponderado pelo tempo.
-    expect(points.last.returnPercent, closeTo(13.4375, 0.0001));
-  });
-
-  test('entrada no rastreamento ignora compras do mesmo dia', () {
-    AssetDailySnapshot day(int d, double quantity, double value) =>
-        AssetDailySnapshot(
-          assetKey: 'b3:TEST3',
-          date: DateTime(2026, 9, d),
-          quantity: quantity,
-          averagePrice: 10,
-          exchangeRate: 1,
-          currentPrice: value / quantity,
-          valueBrl: value,
-          costBrl: quantity * 10,
-          updatedAt: DateTime.utc(2026, 9, d),
-        );
-    final entries = trackingEntries([
-      (
-        snapshots: [day(18, 15, 150), day(17, 10, 100)],
-        transactions: [
-          _transaction(
-            id: 'open',
-            type: InvestmentTransactionType.openingPosition,
-            date: DateTime(2026, 9, 17),
-            quantity: 5,
-            price: 10,
-          ),
-        ],
-      ),
-      (snapshots: [day(17, 10, 100)], transactions: const []),
-    ]);
-
-    expect(entries, hasLength(1));
-    expect(entries.single.date, DateTime(2026, 9, 17));
-    expect(entries.single.value, 50);
+    expect(points.map((item) => item.resultBrl), [0, 100, 210]);
+    expect(points.last.returnPercent, closeTo(21, 0.0001));
   });
 }
