@@ -34,6 +34,13 @@ class PortfolioController extends ChangeNotifier {
   List<InvestmentAsset> assets = [];
   List<PricePoint> portfolioHistory = [];
   List<PortfolioSnapshot> portfolioSnapshots = [];
+
+  /// Todos os registros diários da carteira, para o gráfico da tela inicial.
+  /// [portfolioSnapshots] pode estar recortado pela janela da comparação.
+  List<PortfolioSnapshot> portfolioTimeline = [];
+
+  /// Dia e valor em que cada ativo entrou no rastreamento.
+  List<PricePoint> trackingEntryPoints = [];
   List<CdiRate> cdiRates = [];
   List<PricePoint> cdiHistory = [];
   bool cdiLoading = false;
@@ -211,6 +218,9 @@ class PortfolioController extends ChangeNotifier {
     return cost == 0 ? 0 : assetTotalResult(asset) / cost * 100;
   }
 
+  /// Todas as operações da carteira em uma lista estável entre recargas.
+  List<InvestmentTransaction> allTransactions = const [];
+
   List<InvestmentTransaction> transactionsFor(InvestmentAsset asset) =>
       transactionsByAsset[asset.syncKey] ?? const [];
 
@@ -271,6 +281,7 @@ class PortfolioController extends ChangeNotifier {
 
   Future<void> _reloadTransactions() async {
     final transactions = await _database.loadTransactions();
+    allTransactions = List.unmodifiable(transactions);
     transactionsByAsset
       ..clear()
       ..addEntries(
@@ -286,6 +297,7 @@ class PortfolioController extends ChangeNotifier {
 
   Future<void> _reloadSnapshots({DateTime? from}) async {
     portfolioSnapshots = await _database.loadPortfolioSnapshots(from: from);
+    if (from == null) portfolioTimeline = portfolioSnapshots;
     portfolioHistory =
         portfolioSnapshots.map((snapshot) => snapshot.toPoint()).toList();
   }
@@ -296,6 +308,13 @@ class PortfolioController extends ChangeNotifier {
       ...assets.map((asset) => _database.loadAssetDailySnapshots(asset.syncKey)),
     ]);
     final rates = results.first as List<CdiRate>;
+    trackingEntryPoints = trackingEntries([
+      for (var i = 0; i < assets.length; i++)
+        (
+          snapshots: results[i + 1] as List<AssetDailySnapshot>,
+          transactions: transactionsFor(assets[i]),
+        ),
+    ]);
     assetTrackingSummaries.clear();
     for (var i = 0; i < assets.length; i++) {
       final asset = assets[i];
@@ -965,6 +984,7 @@ class PortfolioController extends ChangeNotifier {
         snapshots: results[0] as List<PortfolioSnapshot>,
         transactions: results[1] as List<InvestmentTransaction>,
         cdiRates: results[2] as List<CdiRate>,
+        entries: trackingEntryPoints,
       );
       if (trackingReport == null) {
         intelligenceError = 'Ainda não existem registros para ${period.label}.';

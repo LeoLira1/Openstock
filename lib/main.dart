@@ -11,6 +11,7 @@ import 'models/investment_asset.dart';
 import 'screens/asset_detail_screen.dart';
 import 'screens/comparison_screen.dart';
 import 'screens/intelligence_screen.dart';
+import 'widgets/portfolio_performance_chart.dart';
 
 const _ink = Color(0xFF0B1220);
 const _surface = Color(0xFF121C2D);
@@ -304,70 +305,22 @@ class _HomeDashboardState extends State<HomeDashboard> {
     if (controller.assets.isEmpty) {
       return const _EmptyPortfolio();
     }
-    final positive = controller.dayResult >= 0;
     return RefreshIndicator(
       onRefresh: controller.refresh,
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
         children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(22),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('PATRIMÔNIO INVESTIDO',
-                      style: TextStyle(
-                          color: _muted, fontSize: 12, letterSpacing: 1.2)),
-                  const SizedBox(height: 8),
-                  FittedBox(
-                    child: Text(
-                      _money(controller.totalValue),
-                      style: const TextStyle(
-                        fontSize: 36,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -1,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      _ChangePill(
-                        value: controller.dayResult,
-                        percent: controller.dayPercent,
-                      ),
-                      Text(
-                        controller.dayChangeLabel,
-                        style: TextStyle(color: positive ? _green : _red),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    height: 155,
-                    width: double.infinity,
-                    child: controller.portfolioHistory.length >= 2
-                        ? PortfolioLineChart(
-                            points: controller.portfolioHistory,
-                            positive: controller.portfolioHistory.last.value >=
-                                controller.portfolioHistory.first.value,
-                          )
-                        : const _ChartPlaceholder(),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    controller.lastRefresh == null
-                        ? 'Valores armazenados no aparelho'
-                        : 'Atualizado ${DateFormat("dd/MM 'às' HH:mm").format(controller.lastRefresh!)}',
-                    style: const TextStyle(color: _muted, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
+          PortfolioPerformanceCard(
+            snapshots: controller.portfolioTimeline,
+            transactions: controller.allTransactions,
+            entries: controller.trackingEntryPoints,
+            currentValue: controller.totalValue,
+            dayResult: controller.dayResult,
+            dayPercent: controller.dayPercent,
+            dayLabel: controller.dayChangeLabel,
+            footer: controller.lastRefresh == null
+                ? 'Valores armazenados no aparelho'
+                : 'Atualizado ${DateFormat("dd/MM 'às' HH:mm").format(controller.lastRefresh!)}',
           ),
           if (controller.message != null) ...[
             const SizedBox(height: 12),
@@ -1483,26 +1436,6 @@ class _LogoMark extends StatelessWidget {
   }
 }
 
-class _ChangePill extends StatelessWidget {
-  const _ChangePill({required this.value, required this.percent});
-  final double value;
-  final double percent;
-  @override
-  Widget build(BuildContext context) {
-    final positive = value >= 0;
-    final color = positive ? _green : _red;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: .12),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Text('${_signedMoney(value)}  ${_signedPercent(percent)}',
-          style: TextStyle(color: color, fontWeight: FontWeight.w800)),
-    );
-  }
-}
-
 class _MetricCard extends StatelessWidget {
   const _MetricCard({
     required this.title,
@@ -1741,23 +1674,6 @@ class _TickerBadge extends StatelessWidget {
           style: const TextStyle(color: _green, fontWeight: FontWeight.w800)),
     );
   }
-}
-
-class _ChartPlaceholder extends StatelessWidget {
-  const _ChartPlaceholder();
-  @override
-  Widget build(BuildContext context) => Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF0E1727),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        alignment: Alignment.center,
-        padding: const EdgeInsets.all(22),
-        child: const Text(
-            'O gráfico ganhará forma com o histórico das cotações.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: _muted)),
-      );
 }
 
 class _Notice extends StatelessWidget {

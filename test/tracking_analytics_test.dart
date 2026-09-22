@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openstock/models/history_models.dart';
+import 'package:openstock/models/investment_asset.dart';
 import 'package:openstock/models/investment_transaction.dart';
 import 'package:openstock/models/tracking_analytics.dart';
 
@@ -235,5 +236,97 @@ void main() {
     expect(const ReportPeriod(2028, 2).end, DateTime(2028, 2, 29, 23, 59, 59));
     expect(const ReportPeriod(2026, 12).end, DateTime(2026, 12, 31, 23, 59, 59));
     expect(const ReportPeriod(2026).label, '2026');
+  });
+
+  test('ativo incluído depois do início não vira lucro', () {
+    // 16/09 só um ativo; 17/09 outro passa a ser rastreado com R$ 10 mil.
+    final snapshots = [
+      portfolioDay(DateTime(2026, 9, 16), 38000),
+      portfolioDay(DateTime(2026, 9, 17), 48100),
+      portfolioDay(DateTime(2026, 9, 18), 47900),
+    ];
+    final entries = [PricePoint(DateTime(2026, 9, 17), 10000)];
+
+    final points = calculatePortfolioPerformance(
+      snapshots: snapshots,
+      transactions: const [],
+      entries: entries,
+    );
+
+    expect(points, hasLength(3));
+    expect(points[1].resultBrl, closeTo(100, 0.0001));
+    expect(points[2].resultBrl, closeTo(-100, 0.0001));
+    expect(points[1].returnPercent, closeTo(100 / 480, 0.0001));
+
+    final report = calculateTrackingReport(
+      period: const ReportPeriod(2026, 9),
+      snapshots: snapshots,
+      transactions: const [],
+      cdiRates: const [],
+      entries: entries,
+    );
+    expect(report!.profitBrl, closeTo(-100, 0.0001));
+    expect(report.trackedEntriesBrl, 10000);
+    expect(report.returnPercent, lessThan(0));
+  });
+
+  test('gráfico da carteira parte do registro anterior à janela', () {
+    final points = calculatePortfolioPerformance(
+      snapshots: [
+        portfolioDay(DateTime(2026, 8, 1), 900),
+        portfolioDay(DateTime(2026, 8, 20), 1000),
+        portfolioDay(DateTime(2026, 9, 1), 1100),
+        portfolioDay(DateTime(2026, 9, 2), 1650),
+      ],
+      transactions: [
+        _transaction(
+          id: 'buy',
+          type: InvestmentTransactionType.purchase,
+          date: DateTime(2026, 9, 2),
+          quantity: 5,
+          price: 100,
+        ),
+      ],
+      since: DateTime(2026, 8, 22),
+    );
+
+    expect(points.first.date, DateTime(2026, 8, 20));
+    expect(points.map((item) => item.resultBrl), [0, 100, 150]);
+    // 1100/1000 e depois 1650/(1100 + 500): retorno ponderado pelo tempo.
+    expect(points.last.returnPercent, closeTo(13.4375, 0.0001));
+  });
+
+  test('entrada no rastreamento ignora compras do mesmo dia', () {
+    AssetDailySnapshot day(int d, double quantity, double value) =>
+        AssetDailySnapshot(
+          assetKey: 'b3:TEST3',
+          date: DateTime(2026, 9, d),
+          quantity: quantity,
+          averagePrice: 10,
+          exchangeRate: 1,
+          currentPrice: value / quantity,
+          valueBrl: value,
+          costBrl: quantity * 10,
+          updatedAt: DateTime.utc(2026, 9, d),
+        );
+    final entries = trackingEntries([
+      (
+        snapshots: [day(18, 15, 150), day(17, 10, 100)],
+        transactions: [
+          _transaction(
+            id: 'open',
+            type: InvestmentTransactionType.openingPosition,
+            date: DateTime(2026, 9, 17),
+            quantity: 5,
+            price: 10,
+          ),
+        ],
+      ),
+      (snapshots: [day(17, 10, 100)], transactions: const []),
+    ]);
+
+    expect(entries, hasLength(1));
+    expect(entries.single.date, DateTime(2026, 9, 17));
+    expect(entries.single.value, 50);
   });
 }
