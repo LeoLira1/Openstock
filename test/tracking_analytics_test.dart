@@ -158,4 +158,82 @@ void main() {
 
     expect(result, closeTo(2.01, 0.000001));
   });
+
+  PortfolioSnapshot portfolioDay(DateTime date, double total) =>
+      PortfolioSnapshot(
+        date: date,
+        totalBrl: total,
+        costBrl: total,
+        updatedAt: date.toUtc(),
+      );
+
+  test('relatório mensal parte do último registro do mês anterior', () {
+    final report = calculateTrackingReport(
+      period: const ReportPeriod(2026, 9),
+      snapshots: [
+        portfolioDay(DateTime(2026, 8, 3), 800),
+        portfolioDay(DateTime(2026, 8, 31), 1000),
+        portfolioDay(DateTime(2026, 9, 1), 1020),
+        portfolioDay(DateTime(2026, 9, 30), 1600),
+        portfolioDay(DateTime(2026, 10, 1), 9999),
+      ],
+      transactions: [
+        _transaction(
+          id: 'buy-aug',
+          type: InvestmentTransactionType.purchase,
+          date: DateTime(2026, 8, 10),
+          quantity: 1,
+          price: 100,
+        ),
+        _transaction(
+          id: 'buy-sep',
+          type: InvestmentTransactionType.purchase,
+          date: DateTime(2026, 9, 15),
+          quantity: 5,
+          price: 100,
+        ),
+        _transaction(
+          id: 'dividend-oct',
+          type: InvestmentTransactionType.dividend,
+          date: DateTime(2026, 10, 1),
+          cash: 10,
+        ),
+      ],
+      cdiRates: [
+        CdiRate(date: DateTime(2026, 8, 31), dailyPercent: 1),
+        CdiRate(date: DateTime(2026, 9, 1), dailyPercent: 1),
+        CdiRate(date: DateTime(2026, 9, 30), dailyPercent: 1),
+      ],
+    );
+
+    expect(report, isNotNull);
+    expect(report!.period.label, 'setembro de 2026');
+    expect(report.start, DateTime(2026, 9, 1));
+    expect(report.end, DateTime(2026, 9, 30));
+    expect(report.snapshotCount, 2);
+    expect(report.initialValueBrl, 1000);
+    expect(report.finalValueBrl, 1600);
+    expect(report.purchasesBrl, 500);
+    expect(report.incomeBrl, 0);
+    expect(report.profitBrl, 100);
+    // Só as taxas de setembro, depois do registro de 31/08.
+    expect(report.cdiPercent, closeTo(2.01, 0.000001));
+  });
+
+  test('mês sem registros não gera relatório', () {
+    final report = calculateTrackingReport(
+      period: const ReportPeriod(2026, 7),
+      snapshots: [portfolioDay(DateTime(2026, 9, 1), 1000)],
+      transactions: const [],
+      cdiRates: const [],
+    );
+
+    expect(report, isNull);
+  });
+
+  test('período mensal termina no último dia do mês', () {
+    expect(const ReportPeriod(2028, 2).end, DateTime(2028, 2, 29, 23, 59, 59));
+    expect(const ReportPeriod(2026, 12).end, DateTime(2026, 12, 31, 23, 59, 59));
+    expect(const ReportPeriod(2026).label, '2026');
+  });
 }

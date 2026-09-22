@@ -42,11 +42,19 @@ class PortfolioController extends ChangeNotifier {
   final Map<String, List<InvestmentTransaction>> transactionsByAsset = {};
   final Map<String, DateTime> quoteDates = {};
   final Map<String, AssetTrackingSummary> assetTrackingSummaries = {};
-  AnnualTrackingReport? annualTrackingReport;
+  TrackingReport? trackingReport;
   bool intelligenceLoading = false;
   String? intelligenceError;
   final Set<String> historyLoading = {};
   final Map<String, String> historyErrors = {};
+
+  /// Dia em que o rastreamento foi reconstruído pela última vez.
+  ///
+  /// Baixar históricos e refazer os registros diários é caro; trocar o mês ou o
+  /// ano do relatório só precisa recalcular a partir do banco. A preparação é
+  /// refeita em um novo dia ou quando operações, ativos ou a sincronização
+  /// mudam os dados de base.
+  DateTime? _trackingPreparedOn;
   MarketQuote? dollarQuote;
   bool loading = true;
   bool refreshing = false;
@@ -283,11 +291,16 @@ class PortfolioController extends ChangeNotifier {
   }
 
   Future<void> _reloadLocalTrackingSummaries() async {
-    final rates = await _database.loadCdiRates();
+    final results = await Future.wait([
+      _database.loadCdiRates(),
+      ...assets.map((asset) => _database.loadAssetDailySnapshots(asset.syncKey)),
+    ]);
+    final rates = results.first as List<CdiRate>;
     assetTrackingSummaries.clear();
-    for (final asset in assets) {
+    for (var i = 0; i < assets.length; i++) {
+      final asset = assets[i];
       final summary = calculateAssetTrackingSummary(
-        snapshots: await _database.loadAssetDailySnapshots(asset.syncKey),
+        snapshots: results[i + 1] as List<AssetDailySnapshot>,
         transactions: transactionsFor(asset),
         cdiRates: rates,
       );
@@ -445,6 +458,7 @@ class PortfolioController extends ChangeNotifier {
     try {
       final report = await SyncService(_database, _turso).synchronize();
       _historyDirtyForSync = false;
+      if (report.downloaded > 0) _trackingPreparedOn = null;
       lastSync = DateTime.now();
       syncMessage = 'Sincronizado: ${report.uploaded} enviados, '
           '${report.downloaded} recebidos.';
@@ -709,13 +723,14 @@ class PortfolioController extends ChangeNotifier {
     HistoryPeriod period, {
     bool force = false,
     bool syncAfter = true,
+    bool notify = true,
   }) async {
     final key = asset.syncKey;
     final taskKey = '$key:${period.name}';
     if (historyLoading.contains(taskKey)) return;
     historyLoading.add(taskKey);
     historyErrors.remove(key);
-    notifyListeners();
+    if (notify) notifyListeners();
     final from = period.startFrom(DateTime.now());
     try {
       if (asset.isFixedIncome) {
@@ -734,7 +749,7 @@ class PortfolioController extends ChangeNotifier {
       }
       var cached = await _database.loadAssetHistory(key, from: from);
       assetHistories[key] = await _database.loadAssetHistory(key);
-      notifyListeners();
+      if (notify) notifyListeners();
       final fresh = await _database.historyFetchIsFresh(key, period);
       if (!force && fresh) return;
       if (asset.market == AssetMarket.manual) {
@@ -769,7 +784,7 @@ class PortfolioController extends ChangeNotifier {
       historyErrors[key] = 'Histórico indisponível: $error';
     } finally {
       historyLoading.remove(taskKey);
-      notifyListeners();
+      if (notify) notifyListeners();
     }
   }
 
@@ -912,67 +927,93 @@ class PortfolioController extends ChangeNotifier {
     }
   }
 
-  Future<void> loadIntelligence(int year) async {
+  /// Monta o balanço de [period]. Com `forceRebuild`, refaz também o
+  /// rastreamento (históricos, câmbio, CDI e registros diários).
+  Future<void> loadIntelligence(
+    ReportPeriod period, {
+    bool forceRebuild = false,
+  }) async {
     if (intelligenceLoading) return;
     intelligenceLoading = true;
     intelligenceError = null;
-    annualTrackingReport = null;
+    trackingReport = null;
     notifyListeners();
-    final startOfYear = DateTime(year);
     final now = DateTime.now();
-    if (startOfYear.isAfter(now)) {
-      intelligenceError =
-          'O relatório de $year começará a receber dados em 01/01/$year.';
+    if (period.start.isAfter(now)) {
+      final start = period.start;
+      intelligenceError = 'O relatório de ${period.label} começará a receber '
+          'dados em ${start.day.toString().padLeft(2, '0')}/'
+          '${start.month.toString().padLeft(2, '0')}/${start.year}.';
       intelligenceLoading = false;
       notifyListeners();
       return;
     }
     try {
-      final trackingStarts = assets
-          .map(trackingStartFor)
-          .whereType<DateTime>()
-          .toList();
-      final earliest = trackingStarts.isEmpty
-          ? startOfYear
-          : trackingStarts.reduce((a, b) => a.isBefore(b) ? a : b);
-
-      for (final asset in assets) {
-        await ensureHistory(
-          asset,
-          HistoryPeriod.maximum,
-          syncAfter: false,
-        );
+      final today = DateTime(now.year, now.month, now.day);
+      if (forceRebuild || _trackingPreparedOn != today) {
+        await _prepareTracking(period.start, now);
+        _trackingPreparedOn = today;
       }
-      await _ensureDollarTrackingHistory(earliest);
-      await _fetchCdiFrom(earliest);
-      await _backfillTrackingSnapshots(earliest, now);
-      await _reloadLocalTrackingSummaries();
 
-      final endOfYear = DateTime(year, 12, 31);
-      final portfolio = await _database.loadPortfolioSnapshots(
-        to: endOfYear,
+      final results = await Future.wait([
+        _database.loadPortfolioSnapshots(to: period.end),
+        _database.loadTransactions(),
+        _database.loadCdiRates(from: period.start, to: period.end),
+      ]);
+      trackingReport = calculateTrackingReport(
+        period: period,
+        snapshots: results[0] as List<PortfolioSnapshot>,
+        transactions: results[1] as List<InvestmentTransaction>,
+        cdiRates: results[2] as List<CdiRate>,
       );
-      final transactions = await _database.loadTransactions();
-      final rates = await _database.loadCdiRates(
-        from: startOfYear,
-        to: endOfYear,
-      );
-      annualTrackingReport = calculateAnnualTrackingReport(
-        year: year,
-        snapshots: portfolio,
-        transactions: transactions,
-        cdiRates: rates,
-      );
-      if (annualTrackingReport == null) {
-        intelligenceError = 'Ainda não existem snapshots para $year.';
+      if (trackingReport == null) {
+        intelligenceError = 'Ainda não existem registros para ${period.label}.';
       }
-      if (tursoConfigured) await synchronize(silent: true);
     } catch (error) {
       intelligenceError = 'Não foi possível montar o relatório: $error';
     } finally {
       intelligenceLoading = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _prepareTracking(DateTime fallbackStart, DateTime now) async {
+    final trackingStarts =
+        assets.map(trackingStartFor).whereType<DateTime>().toList();
+    final earliest = trackingStarts.isEmpty
+        ? fallbackStart
+        : trackingStarts.reduce((a, b) => a.isBefore(b) ? a : b);
+
+    // O CDI vem antes: a renda fixa é calculada a partir dele.
+    await _fetchCdiFrom(earliest);
+    final market = assets.where((asset) => !asset.isFixedIncome).toList();
+    // Os downloads de mercado são independentes: em janelas paralelas a espera
+    // deixa de ser a soma de todos os ativos.
+    final dollar = _ensureDollarTrackingHistory(earliest);
+    for (var i = 0; i < market.length; i += _janelaDeCotacoes) {
+      await Future.wait(market.skip(i).take(_janelaDeCotacoes).map(
+            (asset) => ensureHistory(
+              asset,
+              HistoryPeriod.maximum,
+              syncAfter: false,
+              notify: false,
+            ),
+          ));
+    }
+    await dollar;
+    // A renda fixa segue em série: todos os títulos dividem o mesmo recálculo
+    // e, com o CDI já em cache, só o primeiro chega a consultar a rede.
+    for (final asset in assets.where((asset) => asset.isFixedIncome).toList()) {
+      await ensureHistory(
+        asset,
+        HistoryPeriod.maximum,
+        syncAfter: false,
+        notify: false,
+      );
+    }
+    await _backfillTrackingSnapshots(earliest, now);
+    await _reloadLocalTrackingSummaries();
+    if (tursoConfigured) await synchronize(silent: true);
   }
 
   Future<void> _ensureDollarTrackingHistory(DateTime from) async {
@@ -1007,33 +1048,39 @@ class PortfolioController extends ChangeNotifier {
       'fx:USDBRL',
       from: from,
     );
+    final updatedAt = DateTime.now().toUtc();
     for (final asset in assets) {
       final start = trackingStartFor(asset);
       if (start == null) continue;
-      final startDay = DateTime(start.year, start.month, start.day);
+      final startDay = _dayOf(start);
       final prices = await _database.loadAssetHistory(
         asset.syncKey,
         from: startDay,
       );
-      final transactions = transactionsFor(asset);
+      final transactions = [...transactionsFor(asset)]
+        ..sort((a, b) => a.transactionDate.compareTo(b.transactionDate));
+      // A posição só muda em dia de operação: ela é recalculada quando a
+      // quantidade de operações já ocorridas cresce, não a cada pregão.
+      var applied = -1;
+      var position = calculateTrackedPosition(const []);
+      final snapshots = <AssetDailySnapshot>[];
       for (final point in prices) {
-        final day = DateTime(point.date.year, point.date.month, point.date.day);
+        final day = _dayOf(point.date);
         if (day.isBefore(startDay) || day.isAfter(to)) continue;
-        final position = calculateTrackedPosition(
-          transactions.where((item) {
-            final transactionDay = DateTime(
-              item.transactionDate.year,
-              item.transactionDate.month,
-              item.transactionDate.day,
-            );
-            return !transactionDay.isAfter(day);
-          }),
-        );
+        var count = 0;
+        while (count < transactions.length &&
+            !_dayOf(transactions[count].transactionDate).isAfter(day)) {
+          count++;
+        }
+        if (count != applied) {
+          position = calculateTrackedPosition(transactions.take(count));
+          applied = count;
+        }
         final fx = asset.currency == AssetCurrency.brl
             ? 1.0
             : pointOnOrBefore(dollarHistory, day)?.value;
         if (fx == null) continue;
-        await _database.saveAssetDailySnapshotAt(
+        snapshots.add(AssetDailySnapshot(
           assetKey: asset.syncKey,
           date: day,
           quantity: position.quantity,
@@ -1044,47 +1091,55 @@ class PortfolioController extends ChangeNotifier {
           costBrl: position.averagePrice *
               position.quantity *
               position.averageExchangeRate,
-        );
+          updatedAt: updatedAt,
+        ));
       }
+      await _database.saveAssetDailySnapshots(snapshots);
     }
     await _rebuildPortfolioTracking(from, to);
   }
 
   Future<void> _rebuildPortfolioTracking(DateTime from, DateTime to) async {
-    final byAsset = <String, List<AssetDailySnapshot>>{};
-    final dates = <DateTime>{};
-    for (final asset in assets) {
-      final snapshots = await _database.loadAssetDailySnapshots(
+    final loaded = await Future.wait(assets.map(
+      (asset) => _database.loadAssetDailySnapshots(
         asset.syncKey,
         from: from,
         to: to,
-      );
-      byAsset[asset.syncKey] = snapshots;
-      dates.addAll(snapshots.map((item) => item.date));
-    }
+      ),
+    ));
+    final dates = <DateTime>{
+      for (final snapshots in loaded) ...snapshots.map((item) => item.date),
+    };
     final orderedDates = dates.toList()..sort();
+    // Cada série já vem ordenada: um cursor por ativo avança junto com as
+    // datas, sem varrer a série inteira para cada dia.
+    final cursors = List.filled(loaded.length, -1);
+    final rows = <({DateTime date, double total, double cost})>[];
     for (final date in orderedDates) {
       var value = 0.0;
       var cost = 0.0;
       var positions = 0;
-      for (final snapshots in byAsset.values) {
-        AssetDailySnapshot? latest;
-        for (final snapshot in snapshots) {
-          if (snapshot.date.isAfter(date)) break;
-          latest = snapshot;
+      for (var i = 0; i < loaded.length; i++) {
+        final snapshots = loaded[i];
+        while (cursors[i] + 1 < snapshots.length &&
+            !snapshots[cursors[i] + 1].date.isAfter(date)) {
+          cursors[i]++;
         }
-        if (latest != null) {
+        if (cursors[i] >= 0) {
+          final latest = snapshots[cursors[i]];
           value += latest.valueBrl;
           cost += latest.costBrl;
           positions++;
         }
       }
-      if (positions > 0) {
-        await _database.savePortfolioSnapshotAt(date, value, cost);
-      }
+      if (positions > 0) rows.add((date: date, total: value, cost: cost));
     }
+    await _database.savePortfolioSnapshots(rows);
     await _reloadSnapshots();
   }
+
+  static DateTime _dayOf(DateTime value) =>
+      DateTime(value.year, value.month, value.day);
 
   Future<String?> saveAsset(InvestmentAsset asset) async {
     try {
@@ -1137,6 +1192,7 @@ class PortfolioController extends ChangeNotifier {
         );
       }
       final saved = await _database.saveAsset(assetToSave);
+      _trackingPreparedOn = null;
       await _database.ensureOpeningTransactions([saved]);
       if (positionChanged) await _database.updateOpeningTransaction(saved);
       await _reloadTransactions();
@@ -1161,6 +1217,7 @@ class PortfolioController extends ChangeNotifier {
   Future<void> deleteAsset(InvestmentAsset asset) async {
     if (asset.id == null) return;
     await _database.deleteAsset(asset.id!);
+    _trackingPreparedOn = null;
     assets.removeWhere((item) => item.id == asset.id);
     assetHistories.remove(asset.syncKey);
     notifyListeners();
@@ -1211,6 +1268,7 @@ class PortfolioController extends ChangeNotifier {
         updatedAt: now,
       );
       await _database.saveTransaction(transaction);
+      _trackingPreparedOn = null;
       final projected = calculateTrackedPosition([
         ...transactionsFor(asset),
         transaction,
@@ -1247,6 +1305,7 @@ class PortfolioController extends ChangeNotifier {
     }
     try {
       await _database.deleteTransaction(transaction.id);
+      _trackingPreparedOn = null;
       final remaining = transactionsFor(asset)
           .where((item) => item.id != transaction.id)
           .toList();

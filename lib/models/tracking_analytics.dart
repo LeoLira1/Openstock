@@ -32,9 +32,53 @@ class AssetTrackingSummary {
   bool get isUnderwater => currentUnderwaterDays > 0;
 }
 
-class AnnualTrackingReport {
-  const AnnualTrackingReport({
-    required this.year,
+/// Janela escolhida no relatório: um ano inteiro ou um mês específico.
+class ReportPeriod {
+  const ReportPeriod(this.year, [this.month]);
+
+  final int year;
+
+  /// `null` representa o ano inteiro.
+  final int? month;
+
+  bool get isMonthly => month != null;
+
+  DateTime get start => DateTime(year, month ?? 1);
+
+  /// Último instante do período; `DateTime(ano, mês + 1, 0)` é o último dia.
+  DateTime get end => month == null
+      ? DateTime(year, 12, 31, 23, 59, 59)
+      : DateTime(year, month! + 1, 0, 23, 59, 59);
+
+  String get label =>
+      month == null ? '$year' : '${monthNames[month! - 1]} de $year';
+
+  static const monthNames = [
+    'janeiro',
+    'fevereiro',
+    'março',
+    'abril',
+    'maio',
+    'junho',
+    'julho',
+    'agosto',
+    'setembro',
+    'outubro',
+    'novembro',
+    'dezembro',
+  ];
+
+  @override
+  bool operator ==(Object other) =>
+      other is ReportPeriod && other.year == year && other.month == month;
+
+  @override
+  int get hashCode => Object.hash(year, month);
+}
+
+class TrackingReport {
+  const TrackingReport({
+    required this.period,
     required this.start,
     required this.end,
     required this.initialValueBrl,
@@ -48,7 +92,7 @@ class AnnualTrackingReport {
     required this.snapshotCount,
   });
 
-  final int year;
+  final ReportPeriod period;
   final DateTime start;
   final DateTime end;
   final double initialValueBrl;
@@ -60,6 +104,8 @@ class AnnualTrackingReport {
   final double returnPercent;
   final double cdiPercent;
   final int snapshotCount;
+
+  int get year => period.year;
 
   double get differencePoints => returnPercent - cdiPercent;
 
@@ -107,24 +153,39 @@ AssetTrackingSummary? calculateAssetTrackingSummary({
   );
 }
 
-AnnualTrackingReport? calculateAnnualTrackingReport({
+TrackingReport? calculateAnnualTrackingReport({
   required int year,
   required List<PortfolioSnapshot> snapshots,
   required List<InvestmentTransaction> transactions,
   required List<CdiRate> cdiRates,
+}) =>
+    calculateTrackingReport(
+      period: ReportPeriod(year),
+      snapshots: snapshots,
+      transactions: transactions,
+      cdiRates: cdiRates,
+    );
+
+/// Balanço de [period]: o último registro anterior ao período serve de ponto de
+/// partida, para que o primeiro pregão do mês (ou do ano) já conte resultado.
+TrackingReport? calculateTrackingReport({
+  required ReportPeriod period,
+  required List<PortfolioSnapshot> snapshots,
+  required List<InvestmentTransaction> transactions,
+  required List<CdiRate> cdiRates,
 }) {
-  final startOfYear = DateTime(year);
-  final endOfYear = DateTime(year, 12, 31, 23, 59, 59);
-  final all = snapshots.where((item) => !item.date.isAfter(endOfYear)).toList()
+  final periodStart = period.start;
+  final periodEnd = period.end;
+  final all = snapshots.where((item) => !item.date.isAfter(periodEnd)).toList()
     ..sort((a, b) => a.date.compareTo(b.date));
   final withinYear = all
       .where((item) =>
-          !item.date.isBefore(startOfYear) && !item.date.isAfter(endOfYear))
+          !item.date.isBefore(periodStart) && !item.date.isAfter(periodEnd))
       .toList();
   if (withinYear.isEmpty) return null;
   PortfolioSnapshot? previous;
   for (final snapshot in all) {
-    if (snapshot.date.isBefore(startOfYear)) previous = snapshot;
+    if (snapshot.date.isBefore(periodStart)) previous = snapshot;
   }
   final ordered = [
     if (previous != null) previous,
@@ -136,8 +197,8 @@ AnnualTrackingReport? calculateAnnualTrackingReport({
           item.deletedAt == null &&
           item.type != InvestmentTransactionType.openingPosition &&
           _day(item.transactionDate).isAfter(_day(flowStart)) &&
-          !_day(item.transactionDate).isBefore(startOfYear) &&
-          !_day(item.transactionDate).isAfter(_day(endOfYear)))
+          !_day(item.transactionDate).isBefore(periodStart) &&
+          !_day(item.transactionDate).isAfter(_day(periodEnd)))
       .toList();
   var purchases = 0.0;
   var sales = 0.0;
@@ -160,8 +221,8 @@ AnnualTrackingReport? calculateAnnualTrackingReport({
       : (index.last.value / index.first.value - 1) * 100;
   final initial = ordered.first.totalBrl;
   final finalValue = ordered.last.totalBrl;
-  return AnnualTrackingReport(
-    year: year,
+  return TrackingReport(
+    period: period,
     start: withinYear.first.date,
     end: withinYear.last.date,
     initialValueBrl: initial,

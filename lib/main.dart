@@ -109,12 +109,16 @@ class _PortfolioShellState extends State<PortfolioShell> {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: widget.controller,
-      builder: (context, _) {
-        final controller = widget.controller;
-        return Scaffold(
-          appBar: AppBar(
+    final controller = widget.controller;
+    // Só a barra do topo, o carregamento inicial e a aba visível acompanham o
+    // controller: as abas escondidas no IndexedStack deixam de ser refeitas a
+    // cada notificação e voltam a ser atualizadas quando reaparecem.
+    return Scaffold(
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight),
+        child: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => AppBar(
             backgroundColor: _ink,
             titleSpacing: 20,
             title: const Row(
@@ -150,66 +154,137 @@ class _PortfolioShellState extends State<PortfolioShell> {
               const SizedBox(width: 8),
             ],
           ),
-          body: SafeArea(
-            top: false,
-            child: controller.loading
-                ? const Center(child: CircularProgressIndicator())
-                : IndexedStack(
-                    index: index,
-                    children: [
-                      HomeDashboard(controller: controller),
-                      AssetsScreen(controller: controller),
-                      ComparisonScreen(controller: controller),
-                      IntelligenceScreen(
-                        controller: controller,
-                        active: index == 3,
-                      ),
-                      SettingsScreen(controller: controller),
-                    ],
-                  ),
-          ),
-          floatingActionButton: index >= 3
-              ? null
-              : FloatingActionButton.extended(
-                  backgroundColor: _green,
-                  foregroundColor: _ink,
-                  onPressed: () => _editAsset(context, controller),
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Text('Adicionar',
-                      style: TextStyle(fontWeight: FontWeight.w800)),
+        ),
+      ),
+      body: SafeArea(
+        top: false,
+        child: ListenableBuilder(
+          listenable: controller,
+          builder: (context, tabs) => controller.loading
+              ? const Center(child: CircularProgressIndicator())
+              : tabs!,
+          child: IndexedStack(
+            index: index,
+            children: [
+              _ActiveTab(
+                controller: controller,
+                active: index == 0,
+                builder: () => HomeDashboard(controller: controller),
+              ),
+              _ActiveTab(
+                controller: controller,
+                active: index == 1,
+                builder: () => AssetsScreen(controller: controller),
+              ),
+              _ActiveTab(
+                controller: controller,
+                active: index == 2,
+                builder: () => ComparisonScreen(controller: controller),
+              ),
+              _ActiveTab(
+                controller: controller,
+                active: index == 3,
+                builder: () => IntelligenceScreen(
+                  controller: controller,
+                  active: index == 3,
                 ),
-          bottomNavigationBar: NavigationBar(
-            backgroundColor: const Color(0xFF0E1727),
-            selectedIndex: index,
-            indicatorColor: _green.withValues(alpha: .18),
-            onDestinationSelected: (value) => setState(() => index = value),
-            destinations: const [
-              NavigationDestination(
-                  icon: Icon(Icons.space_dashboard_outlined),
-                  selectedIcon: Icon(Icons.space_dashboard_rounded),
-                  label: 'Carteira'),
-              NavigationDestination(
-                  icon: Icon(Icons.candlestick_chart_outlined),
-                  selectedIcon: Icon(Icons.candlestick_chart_rounded),
-                  label: 'Ativos'),
-              NavigationDestination(
-                  icon: Icon(Icons.compare_arrows_outlined),
-                  selectedIcon: Icon(Icons.compare_arrows_rounded),
-                  label: 'Comparar'),
-              NavigationDestination(
-                  icon: Icon(Icons.insights_outlined),
-                  selectedIcon: Icon(Icons.insights_rounded),
-                  label: 'Relatório'),
-              NavigationDestination(
-                  icon: Icon(Icons.info_outline_rounded),
-                  selectedIcon: Icon(Icons.info_rounded),
-                  label: 'Ajustes'),
+              ),
+              _ActiveTab(
+                controller: controller,
+                active: index == 4,
+                builder: () => SettingsScreen(controller: controller),
+              ),
             ],
           ),
-        );
-      },
+        ),
+      ),
+      floatingActionButton: index >= 3
+          ? null
+          : FloatingActionButton.extended(
+              backgroundColor: _green,
+              foregroundColor: _ink,
+              onPressed: () => _editAsset(context, controller),
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Adicionar',
+                  style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+      bottomNavigationBar: NavigationBar(
+        backgroundColor: const Color(0xFF0E1727),
+        selectedIndex: index,
+        indicatorColor: _green.withValues(alpha: .18),
+        onDestinationSelected: (value) => setState(() => index = value),
+        destinations: const [
+          NavigationDestination(
+              icon: Icon(Icons.space_dashboard_outlined),
+              selectedIcon: Icon(Icons.space_dashboard_rounded),
+              label: 'Carteira'),
+          NavigationDestination(
+              icon: Icon(Icons.candlestick_chart_outlined),
+              selectedIcon: Icon(Icons.candlestick_chart_rounded),
+              label: 'Ativos'),
+          NavigationDestination(
+              icon: Icon(Icons.compare_arrows_outlined),
+              selectedIcon: Icon(Icons.compare_arrows_rounded),
+              label: 'Comparar'),
+          NavigationDestination(
+              icon: Icon(Icons.insights_outlined),
+              selectedIcon: Icon(Icons.insights_rounded),
+              label: 'Relatório'),
+          NavigationDestination(
+              icon: Icon(Icons.info_outline_rounded),
+              selectedIcon: Icon(Icons.info_rounded),
+              label: 'Ajustes'),
+        ],
+      ),
     );
   }
+}
+
+/// Aba do [IndexedStack] que só se reconstrói com o controller enquanto está
+/// visível. Escondida, mantém o último quadro e o estado das telas.
+class _ActiveTab extends StatefulWidget {
+  const _ActiveTab({
+    required this.controller,
+    required this.active,
+    required this.builder,
+  });
+
+  final PortfolioController controller;
+  final bool active;
+  final Widget Function() builder;
+
+  @override
+  State<_ActiveTab> createState() => _ActiveTabState();
+}
+
+class _ActiveTabState extends State<_ActiveTab> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_changed);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ActiveTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_changed);
+      widget.controller.addListener(_changed);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    if (widget.active && mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder();
 }
 
 class HomeDashboard extends StatefulWidget {

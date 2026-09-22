@@ -461,6 +461,58 @@ class DatabaseService {
     ]);
   }
 
+  /// Grava vários registros diários em uma única transação.
+  ///
+  /// A reconstrução do rastreamento regrava o histórico inteiro a cada
+  /// abertura do relatório. Uma linha idêntica à guardada não é tocada, para
+  /// não voltar a ficar pendente de sincronização sem ter mudado nada.
+  Future<void> saveAssetDailySnapshots(
+    List<AssetDailySnapshot> snapshots,
+  ) async {
+    if (snapshots.isEmpty) return;
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final item in snapshots) {
+        batch.rawInsert('''
+          INSERT INTO asset_daily_snapshots(
+            asset_key, snapshot_date, quantity, average_price, exchange_rate,
+            current_price, value_brl, cost_brl, created_at, updated_at,
+            sync_status
+          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+          ON CONFLICT(asset_key, snapshot_date) DO UPDATE SET
+            quantity = excluded.quantity,
+            average_price = excluded.average_price,
+            exchange_rate = excluded.exchange_rate,
+            current_price = excluded.current_price,
+            value_brl = excluded.value_brl,
+            cost_brl = excluded.cost_brl,
+            updated_at = excluded.updated_at,
+            sync_status = 0
+          WHERE quantity IS NOT excluded.quantity
+             OR average_price IS NOT excluded.average_price
+             OR exchange_rate IS NOT excluded.exchange_rate
+             OR current_price IS NOT excluded.current_price
+             OR value_brl IS NOT excluded.value_brl
+             OR cost_brl IS NOT excluded.cost_brl
+        ''', [
+          item.assetKey,
+          dateKey(item.date),
+          item.quantity,
+          item.averagePrice,
+          item.exchangeRate,
+          item.currentPrice,
+          item.valueBrl,
+          item.costBrl,
+          now,
+          now,
+        ]);
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
   Future<List<AssetDailySnapshot>> loadAssetDailySnapshots(
     String assetKey, {
     DateTime? from,
@@ -676,6 +728,34 @@ class DatabaseService {
         updated_at = excluded.updated_at,
         sync_status = 0
     ''', [date, total, cost, now.toIso8601String(), now.toIso8601String()]);
+  }
+
+  /// Versão em lote de [savePortfolioSnapshotAt] que preserva linhas iguais.
+  Future<void> savePortfolioSnapshots(
+    List<({DateTime date, double total, double cost})> snapshots,
+  ) async {
+    if (snapshots.isEmpty) return;
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final item in snapshots) {
+        batch.rawInsert('''
+          INSERT INTO portfolio_snapshots(
+            snapshot_date, total_brl, cost_brl, created_at, updated_at,
+            sync_status
+          ) VALUES(?, ?, ?, ?, ?, 0)
+          ON CONFLICT(snapshot_date) DO UPDATE SET
+            total_brl = excluded.total_brl,
+            cost_brl = excluded.cost_brl,
+            updated_at = excluded.updated_at,
+            sync_status = 0
+          WHERE total_brl IS NOT excluded.total_brl
+             OR cost_brl IS NOT excluded.cost_brl
+        ''', [dateKey(item.date), item.total, item.cost, now, now]);
+      }
+      await batch.commit(noResult: true);
+    });
   }
 
   Future<List<PortfolioSnapshot>> loadPortfolioSnapshots({
